@@ -117,9 +117,16 @@ class UpdateSubscription extends AdminEvent {
   final int autolike;
   final int? isFree;
   final String? paymentMethod;
-  const UpdateSubscription(this.userId, this.autolike, {this.isFree, this.paymentMethod});
+  final String? txid;
+  const UpdateSubscription(this.userId, this.autolike, {this.isFree, this.paymentMethod, this.txid});
   @override
-  List<Object?> get props => [userId, autolike, isFree, paymentMethod];
+  List<Object?> get props => [userId, autolike, isFree, paymentMethod, txid];
+}
+
+class ClearMessages extends AdminEvent {
+  const ClearMessages();
+  @override
+  List<Object?> get props => [];
 }
 
 class BulkUpdateSubscription extends AdminEvent {

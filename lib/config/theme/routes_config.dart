@@ -87,7 +87,11 @@ class AppRoutes {
       case Routes.adminFinance:
         return MaterialPageRoute(builder: (_) => const FinanceScreen());
       case Routes.campaign:
-        return MaterialPageRoute(builder: (_) => const CampaignScreen());
+        final args = settings.arguments as Map<String, dynamic>?;
+        final isMandatory = args?['isMandatory'] as bool? ?? false;
+        return MaterialPageRoute(
+          builder: (_) => CampaignScreen(isMandatory: isMandatory),
+        );
       default:
         return _unDefinedRoute();
     }

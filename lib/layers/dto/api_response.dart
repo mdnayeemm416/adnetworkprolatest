@@ -5,6 +5,8 @@ class ApiResponse<T> {
   final String? devMessage;
   final T? data;
   final List<T>? dataList;
+  final bool? isLocked;
+  final String? instruction;
 
   ApiResponse({
     this.success,
@@ -13,6 +15,8 @@ class ApiResponse<T> {
     this.data,
     this.dataList,
     this.devMessage,
+    this.isLocked,
+    this.instruction,
   });
 
   /// Whether the API call succeeded.
@@ -64,6 +68,8 @@ class ApiResponse<T> {
       statusCode: statusCode,
       message: res['message'] as String?,
       devMessage: res['dev_message'] as String?,
+      isLocked: res['is_locked'] as bool?,
+      instruction: res['instruction'] as String?,
       data: parsedData,
       dataList: parsedList,
     );
@@ -73,6 +79,8 @@ class ApiResponse<T> {
         'message': message,
         'dev_message': devMessage,
         'status': success,
+        'is_locked': isLocked,
+        'instruction': instruction,
         'data': data != null ? toJsonModel(data as T) : null,
         'datalist': dataList?.map((x) => toJsonModel(x)).toList(),
       };

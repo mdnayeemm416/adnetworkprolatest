@@ -68,19 +68,57 @@ class _AdminSubscriptionsScreenBodyState
               ),
             ),
           );
+          context.read<AdminBloc>().add(const ClearMessages());
         }
         if (state.errorMessage.isNotEmpty &&
             state.status == AdminStatus.loaded) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(state.errorMessage),
-              backgroundColor: cs.error,
-              behavior: SnackBarBehavior.floating,
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: isDark ? const Color(0xFF1E1E2E) : cs.surface,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(20),
+                side: BorderSide(color: cs.error.withValues(alpha: .2)),
               ),
+              title: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: cs.error.withValues(alpha: .1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(Icons.error_outline_rounded, color: cs.error, size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Operation Failed',
+                    style: getBoldStyle(fontSize: 16, color: cs.onSurface),
+                  ),
+                ],
+              ),
+              content: Text(
+                state.errorMessage,
+                style: getRegularStyle(fontSize: 13, color: cs.onSurface.withValues(alpha: .8)),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: TextButton.styleFrom(
+                    foregroundColor: cs.error,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  child: Text(
+                    'Close',
+                    style: getBoldStyle(fontSize: 13),
+                  ),
+                ),
+              ],
             ),
           );
+          context.read<AdminBloc>().add(const ClearMessages());
         }
       },
       builder: (context, state) {
@@ -646,6 +684,36 @@ class _UserManagementCard extends StatelessWidget {
                           ),
                         ],
                       ),
+                      if (user.subscriptionStartedAt != null) ...[
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.timer_outlined,
+                              size: 11,
+                              color: cs.onSurface.withValues(alpha: .3),
+                            ),
+                            const SizedBox(width: 4),
+                            Builder(
+                              builder: (context) {
+                                final expiryDate = user.subscriptionStartedAt!.add(const Duration(days: 30));
+                                final difference = expiryDate.difference(DateTime.now());
+                                final daysRemaining = (difference.inSeconds / 86400).ceil();
+                                final hasExpired = difference.isNegative || daysRemaining <= 0;
+                                return Text(
+                                  hasExpired ? 'Expired' : '$daysRemaining days remaining',
+                                  style: getMediumStyle(
+                                    fontSize: 10,
+                                    color: hasExpired
+                                        ? cs.error
+                                        : cs.primary,
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -845,6 +913,7 @@ class _UserSubConfigDialogState extends State<_UserSubConfigDialog> {
   bool _isFree = false;
   String _selectedMethod = 'bkash';
   final _customMethodCtrl = TextEditingController();
+  final _txidCtrl = TextEditingController();
 
   final List<String> _paymentMethods = [
     'bkash',
@@ -859,6 +928,7 @@ class _UserSubConfigDialogState extends State<_UserSubConfigDialog> {
   @override
   void dispose() {
     _customMethodCtrl.dispose();
+    _txidCtrl.dispose();
     super.dispose();
   }
 
@@ -974,6 +1044,30 @@ class _UserSubConfigDialogState extends State<_UserSubConfigDialog> {
                 ),
               ),
             ],
+
+            const SizedBox(height: 12),
+            Text(
+              'Transaction ID (TxID) *',
+              style: getBoldStyle(fontSize: 13, color: cs.onSurface),
+            ),
+            const SizedBox(height: 6),
+            Container(
+              decoration: BoxDecoration(
+                color: isDark ? cs.onSurface.withValues(alpha: .04) : cs.primaryContainer,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: cs.onSurface.withValues(alpha: .05)),
+              ),
+              child: TextField(
+                controller: _txidCtrl,
+                style: getMediumStyle(fontSize: 13, color: cs.onSurface),
+                decoration: InputDecoration(
+                  hintText: 'Enter Transaction ID',
+                  hintStyle: getRegularStyle(fontSize: 12, color: cs.onSurface.withValues(alpha: .35)),
+                  border: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -984,6 +1078,38 @@ class _UserSubConfigDialogState extends State<_UserSubConfigDialog> {
         ),
         ElevatedButton(
           onPressed: () {
+            final txid = _txidCtrl.text.trim();
+            if (txid.isEmpty) {
+              showDialog(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  backgroundColor: isDark ? const Color(0xFF1E1E2E) : cs.surface,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    side: BorderSide(color: cs.error.withValues(alpha: .2)),
+                  ),
+                  title: Row(
+                    children: [
+                      Icon(Icons.warning_amber_rounded, color: cs.error),
+                      const SizedBox(width: 8),
+                      Text('Validation Error', style: getBoldStyle(fontSize: 16, color: cs.onSurface)),
+                    ],
+                  ),
+                  content: Text(
+                    'Transaction ID (TxID) is compulsory to enable auto-like.',
+                    style: getRegularStyle(fontSize: 13, color: cs.onSurface),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: Text('OK', style: getBoldStyle(fontSize: 13, color: cs.primary)),
+                    ),
+                  ],
+                ),
+              );
+              return;
+            }
+
             final method = _selectedMethod == 'other'
                 ? _customMethodCtrl.text.trim()
                 : _selectedMethod;
@@ -994,6 +1120,7 @@ class _UserSubConfigDialogState extends State<_UserSubConfigDialog> {
                 1,
                 isFree: _isFree ? 1 : 0,
                 paymentMethod: method.isEmpty ? 'other' : method,
+                txid: txid,
               ),
             );
             Navigator.pop(context);

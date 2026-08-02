@@ -7,29 +7,44 @@ class MobileConfig {
   final String adsHeight;
   final String adsWidth;
   final String allowDns;
+  final String campaignMust;
   final String campaignSeconds;
+  final String campaignSecondsMax;
+  final String campaignSecondsMin;
   final String maxAdsTime;
   final String minAdsTime;
   final String useDeviceResolution;
+  final String maintenanceMode;
+  final String maintenanceMessage;
 
   const MobileConfig({
     required this.adsHeight,
     required this.adsWidth,
     required this.allowDns,
+    required this.campaignMust,
     required this.campaignSeconds,
+    required this.campaignSecondsMax,
+    required this.campaignSecondsMin,
     required this.maxAdsTime,
     required this.minAdsTime,
     required this.useDeviceResolution,
+    required this.maintenanceMode,
+    required this.maintenanceMessage,
   });
 
   static const defaultConfig = MobileConfig(
     adsHeight: "256",
     adsWidth: "256",
     allowDns: "0",
+    campaignMust: "1",
     campaignSeconds: "20",
+    campaignSecondsMax: "25",
+    campaignSecondsMin: "15",
     maxAdsTime: "15",
     minAdsTime: "10",
     useDeviceResolution: "1",
+    maintenanceMode: "0",
+    maintenanceMessage: "System is currently under maintenance. Please try again later.",
   );
 
   factory MobileConfig.fromJson(Map<String, dynamic> json) {
@@ -42,10 +57,15 @@ class MobileConfig {
       adsHeight: data['ads_height']?.toString() ?? "256",
       adsWidth: data['ads_width']?.toString() ?? "256",
       allowDns: data['allow_dns']?.toString() ?? "0",
+      campaignMust: data['campaign_must']?.toString() ?? "1",
       campaignSeconds: data['campaign_seconds']?.toString() ?? "20",
+      campaignSecondsMax: data['campaign_seconds_max']?.toString() ?? "25",
+      campaignSecondsMin: data['campaign_seconds_min']?.toString() ?? "15",
       maxAdsTime: data['max_ads_time']?.toString() ?? "15",
       minAdsTime: data['min_ads_time']?.toString() ?? "10",
       useDeviceResolution: data['use_device_resolution']?.toString() ?? "1",
+      maintenanceMode: data['maintenance_mode']?.toString() ?? "0",
+      maintenanceMessage: data['maintenance_message']?.toString() ?? "System is currently under maintenance. Please try again later.",
     );
   }
 
@@ -54,10 +74,15 @@ class MobileConfig {
       'ads_height': adsHeight,
       'ads_width': adsWidth,
       'allow_dns': allowDns,
+      'campaign_must': campaignMust,
       'campaign_seconds': campaignSeconds,
+      'campaign_seconds_max': campaignSecondsMax,
+      'campaign_seconds_min': campaignSecondsMin,
       'max_ads_time': maxAdsTime,
       'min_ads_time': minAdsTime,
       'use_device_resolution': useDeviceResolution,
+      'maintenance_mode': maintenanceMode,
+      'maintenance_message': maintenanceMessage,
     };
   }
 }

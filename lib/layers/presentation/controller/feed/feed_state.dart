@@ -24,6 +24,12 @@ class FeedState extends Equatable {
   /// Seconds remaining for the 5-minute cooldown (0 = no cooldown).
   final int nextCooldownSeconds;
 
+  /// Feed locked by campaign requirement.
+  final bool isLocked;
+
+  /// Campaign instruction banner message.
+  final String? instruction;
+
   const FeedState({
     this.status = FeedStatus.initial,
     this.links = const [],
@@ -35,6 +41,8 @@ class FeedState extends Equatable {
     this.pageWaitSeconds = 0,
     this.nextButtonClicks = 0,
     this.nextCooldownSeconds = 0,
+    this.isLocked = false,
+    this.instruction,
   });
 
   FeedState copyWith({
@@ -48,6 +56,8 @@ class FeedState extends Equatable {
     int? pageWaitSeconds,
     int? nextButtonClicks,
     int? nextCooldownSeconds,
+    bool? isLocked,
+    String? instruction,
   }) {
     return FeedState(
       status: status ?? this.status,
@@ -60,6 +70,8 @@ class FeedState extends Equatable {
       pageWaitSeconds: pageWaitSeconds ?? this.pageWaitSeconds,
       nextButtonClicks: nextButtonClicks ?? this.nextButtonClicks,
       nextCooldownSeconds: nextCooldownSeconds ?? this.nextCooldownSeconds,
+      isLocked: isLocked ?? this.isLocked,
+      instruction: instruction ?? this.instruction,
     );
   }
 
@@ -75,5 +87,7 @@ class FeedState extends Equatable {
     pageWaitSeconds,
     nextButtonClicks,
     nextCooldownSeconds,
+    isLocked,
+    instruction,
   ];
 }

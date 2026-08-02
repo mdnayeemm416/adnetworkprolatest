@@ -151,6 +151,7 @@ class AdminRepository {
     int autolike, {
     int? isFree,
     String? paymentMethod,
+    String? txid,
   }) async {
     return _api.patch(
       ApiEndpoints.adminUpdateSubscription(userId),
@@ -158,6 +159,7 @@ class AdminRepository {
         'autolike': autolike,
         if (isFree != null) 'is_free': isFree,
         if (paymentMethod != null) 'payment_method': paymentMethod,
+        if (txid != null) 'txid': txid,
       },
     );
   }

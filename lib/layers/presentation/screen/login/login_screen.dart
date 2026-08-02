@@ -1,13 +1,19 @@
 import 'dart:ui';
+import 'dart:io';
 
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:adnetwork/config/theme/styles_manager.dart';
 import 'package:adnetwork/core/services/token_storage.dart';
 import 'package:adnetwork/config/theme/routes_config.dart';
 import 'package:adnetwork/core/functions/navigator.dart';
 import 'package:adnetwork/layers/data/repo/remote/auth_repository.dart';
+import 'package:adnetwork/layers/data/repo/remote/campaign_repository.dart';
+import 'package:adnetwork/core/services/mobile_config_manager.dart';
 import 'package:adnetwork/layers/presentation/controller/login/login_bloc.dart';
 import 'package:adnetwork/layers/presentation/controller/profile/profile_bloc.dart';
 import 'package:adnetwork/layers/presentation/widget/animated_background.dart';
 import 'package:adnetwork/layers/presentation/widget/show_toast.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:toastification/toastification.dart';
@@ -54,6 +60,58 @@ class _LoginScreenState extends State<LoginScreen>
     });
 
     _checkCachedCredentials();
+  }
+
+  Future<bool> _checkIsEmulator() async {
+    try {
+      final deviceInfo = DeviceInfoPlugin();
+      if (Platform.isAndroid) {
+        final androidInfo = await deviceInfo.androidInfo;
+        debugPrint('--- EMULATOR DETECTION DEBUG INFO ---');
+        debugPrint('Brand: ${androidInfo.brand}');
+        debugPrint('Device: ${androidInfo.device}');
+        debugPrint('Model: ${androidInfo.model}');
+        debugPrint('Product: ${androidInfo.product}');
+        debugPrint('Hardware: ${androidInfo.hardware}');
+        debugPrint('Fingerprint: ${androidInfo.fingerprint}');
+        debugPrint('Is Physical Device: ${androidInfo.isPhysicalDevice}');
+        debugPrint('-------------------------------------');
+
+        final isEmulator =
+            !androidInfo.isPhysicalDevice ||
+            androidInfo.fingerprint.startsWith('generic') ||
+            androidInfo.fingerprint.startsWith('unknown') ||
+            androidInfo.model.contains('google_sdk') ||
+            androidInfo.model.contains('Emulator') ||
+            androidInfo.model.contains('Android SDK built for x86') ||
+            androidInfo.hardware.contains('goldfish') ||
+            androidInfo.hardware.contains('ranchu') ||
+            androidInfo.hardware.contains('vbox86') ||
+            androidInfo.product.contains('sdk') ||
+            androidInfo.product.contains('google_sdk') ||
+            androidInfo.product.contains('sdk_x86') ||
+            androidInfo.product.contains('vbox86p') ||
+            androidInfo.board.toLowerCase().contains('nox') ||
+            androidInfo.bootloader.toLowerCase().contains('nox') ||
+            androidInfo.hardware.toLowerCase().contains('nox') ||
+            androidInfo.product.toLowerCase().contains('nox') ||
+            (androidInfo.brand.startsWith('generic') &&
+                androidInfo.device.startsWith('generic'));
+
+        return isEmulator;
+      } else if (Platform.isIOS) {
+        final iosInfo = await deviceInfo.iosInfo;
+        debugPrint('--- IOS SIMULATOR DETECTION ---');
+        debugPrint('Model: ${iosInfo.model}');
+        debugPrint('Name: ${iosInfo.name}');
+        debugPrint('Is Physical Device: ${iosInfo.isPhysicalDevice}');
+        debugPrint('-------------------------------------');
+        return !iosInfo.isPhysicalDevice;
+      }
+    } catch (e) {
+      debugPrint('Error checking emulator: $e');
+    }
+    return false;
   }
 
   Future<void> _checkCachedCredentials() async {
@@ -107,14 +165,119 @@ class _LoginScreenState extends State<LoginScreen>
       child: BlocListener<LoginBloc, LoginState>(
         listener: (context, state) {
           if (state.status == LoginStatus.success) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
+            WidgetsBinding.instance.addPostFrameCallback((_) async {
+              final isEmu = await _checkIsEmulator();
+              if (!context.mounted) return;
+              if (isEmu && !kDebugMode) {
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (dialogCtx) => PopScope(
+                    canPop: false,
+                    child: AlertDialog(
+                      backgroundColor: isDark
+                          ? const Color(0xFF1E1E2E)
+                          : colorScheme.surface,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        side: BorderSide(
+                          color: colorScheme.error.withValues(alpha: .2),
+                        ),
+                      ),
+                      title: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: colorScheme.error.withValues(alpha: .1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.warning_amber_rounded,
+                              color: colorScheme.error,
+                              size: 22,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            'Emulator Detected',
+                            style: getBoldStyle(
+                              fontSize: 16,
+                              color: colorScheme.onSurface,
+                            ),
+                          ),
+                        ],
+                      ),
+                      content: Text(
+                        'In emulator this app can not be run , PC version are comminng soon ,',
+                        style: getRegularStyle(
+                          fontSize: 13,
+                          color: colorScheme.onSurface.withValues(alpha: .8),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+                return;
+              }
+
               context.read<ProfileBloc>().add(const LoadProfile());
-              showToast(
-                context: context,
-                message: 'Login Successful!',
-                toastificationType: ToastificationType.success,
-              );
-              navigateAndReplace(context, Routes.home);
+
+              final config = MobileConfigManager.instance.config;
+              if (config.campaignMust == "1" || config.campaignMust == "1") {
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (dialogCtx) => const PopScope(
+                    canPop: false,
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
+                );
+
+                try {
+                  final statusResponse = await context
+                      .read<CampaignRepository>()
+                      .getCampaignStatus();
+                  if (context.mounted) {
+                    Navigator.of(context).pop(); // dismiss loader
+                  }
+
+                  if (statusResponse.isSuccess && statusResponse.data != null) {
+                    final campaignsAvailable =
+                        statusResponse.data!.campaignsAvailable;
+                    if (campaignsAvailable && context.mounted) {
+                      showToast(
+                        context: context,
+                        message:
+                            'Login Successful! Please complete your mandatory campaign.',
+                        toastificationType: ToastificationType.success,
+                      );
+                      Navigator.pushReplacementNamed(
+                        context,
+                        Routes.campaign,
+                        arguments: {'isMandatory': true},
+                      );
+                      return;
+                    }
+                  }
+                } catch (e) {
+                  debugPrint('LoginScreen: Error checking campaign status: $e');
+                  if (context.mounted) {
+                    try {
+                      Navigator.of(context).pop();
+                    } catch (_) {}
+                  }
+                }
+              }
+
+              if (context.mounted) {
+                showToast(
+                  context: context,
+                  message: 'Login Successful!',
+                  toastificationType: ToastificationType.success,
+                );
+                navigateAndReplace(context, Routes.home);
+              }
             });
           }
 

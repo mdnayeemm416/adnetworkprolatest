@@ -83,6 +83,9 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
             links: links,
             currentPage: 1,
             hasMore: links.length >= 10,
+            isLocked: response.isLocked ?? false,
+            instruction: response.instruction,
+            errorMessage: response.message ?? '',
           ),
         );
       } else {
@@ -90,6 +93,8 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
           state.copyWith(
             status: FeedStatus.error,
             errorMessage: response.message ?? 'Failed to load feed',
+            isLocked: response.isLocked ?? false,
+            instruction: response.instruction,
           ),
         );
       }
@@ -274,6 +279,9 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
             links: links,
             currentPage: isRefresh ? 1 : page,
             hasMore: links.length >= 10,
+            isLocked: response.isLocked ?? false,
+            instruction: response.instruction,
+            errorMessage: response.message ?? '',
           ),
         );
       } else {
@@ -281,6 +289,8 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
           state.copyWith(
             status: FeedStatus.error,
             errorMessage: response.message ?? 'Failed to load page',
+            isLocked: response.isLocked ?? false,
+            instruction: response.instruction,
           ),
         );
       }
@@ -308,6 +318,8 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
             links: [...state.links, ...newLinks],
             currentPage: nextPage,
             hasMore: newLinks.length >= 10,
+            isLocked: response.isLocked ?? false,
+            instruction: response.instruction,
           ),
         );
       }

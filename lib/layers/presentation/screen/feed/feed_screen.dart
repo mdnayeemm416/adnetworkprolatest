@@ -8,6 +8,7 @@ import 'package:adnetwork/layers/data/repo/remote/user_repository.dart';
 import 'package:adnetwork/layers/presentation/widget/link_post_card.dart';
 import 'package:adnetwork/layers/presentation/widget/suggested_user_card.dart';
 import 'package:flutter/material.dart';
+import 'package:adnetwork/main.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:adnetwork/core/services/token_storage.dart';
@@ -33,7 +34,7 @@ class FeedScreen extends StatefulWidget {
   State<FeedScreen> createState() => _FeedScreenState();
 }
 
-class _FeedScreenState extends State<FeedScreen> {
+class _FeedScreenState extends State<FeedScreen> with RouteAware {
   late ScrollController _scrollController;
   Timer? _botTimer;
   // ── Debounce timer for overlay opacity disk writes ──
@@ -53,6 +54,22 @@ class _FeedScreenState extends State<FeedScreen> {
     _loadOverlayOpacity();
     // Keep screen awake while app is in foreground
     WakelockPlus.enable();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    routeObserver.subscribe(this, ModalRoute.of(context)!);
+  }
+
+  @override
+  void didPopNext() {
+    if (mounted) {
+      context.read<FeedBloc>().add(const RefreshFeed());
+      context.read<NoticeBloc>().add(const LoadNotices());
+      context.read<ProfileBloc>().add(const LoadProfileStats());
+      context.read<ExploreBloc>().add(const RefreshExplore());
+    }
   }
 
   Future<void> _loadOverlayOpacity() async {
@@ -118,6 +135,7 @@ class _FeedScreenState extends State<FeedScreen> {
 
   @override
   void dispose() {
+    routeObserver.unsubscribe(this);
     _botTimer?.cancel();
     _opacityDebounceTimer?.cancel();
     _scrollController.dispose();
@@ -278,6 +296,7 @@ class _FeedScreenState extends State<FeedScreen> {
       buildWhen: (prev, curr) =>
           prev.status != curr.status ||
           prev.links != curr.links ||
+          prev.isLocked != curr.isLocked ||
           // Show/hide like-button cooldown countdown on cards
           prev.likeCooldownSeconds != curr.likeCooldownSeconds ||
           // Switch between the three top-level views
@@ -675,29 +694,9 @@ class _FeedScreenState extends State<FeedScreen> {
                 ),
                 if (state.links.isEmpty)
                   SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 60),
-                      child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.dynamic_feed_rounded,
-                              size: 64,
-                              color: cs.onSurface.withValues(alpha: .3),
-                            ),
-                            const SizedBox(height: 12),
-                            Text(
-                              'No posts yet',
-                              style: getMediumStyle(
-                                fontSize: 16,
-                                color: cs.onSurface.withValues(alpha: .5),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
+                    child: state.isLocked
+                        ? _buildLockedFeedView(context, state)
+                        : _buildEmptyFeedView(context),
                   ),
                 if (state.links.isNotEmpty)
                   SliverList(
@@ -1465,6 +1464,157 @@ class _FeedScreenState extends State<FeedScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildLockedFeedView(BuildContext context, FeedState state) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+      child: Container(
+        padding: const EdgeInsets.all(28),
+        decoration: BoxDecoration(
+          color: isDark
+              ? Colors.red.withValues(alpha: 0.05)
+              : cs.primaryContainer.withValues(alpha: 0.35),
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(
+            color: Colors.red.withValues(alpha: 0.3),
+            width: 1.5,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.red.withValues(alpha: 0.04),
+              blurRadius: 24,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Soft glowing red circle for locked icon
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: Colors.red.withValues(alpha: 0.3),
+                  width: 1.5,
+                ),
+              ),
+              child: const Icon(
+                Icons.lock_outline_rounded,
+                color: Colors.red,
+                size: 48,
+              ),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              'Feed Locked',
+              style: getBoldStyle(fontSize: 22, color: Colors.red),
+            ),
+            const SizedBox(height: 12),
+            if (state.errorMessage.isNotEmpty)
+              Text(
+                state.errorMessage,
+                style: getSemiBoldStyle(
+                  fontSize: 15,
+                  color: cs.onSurface.withValues(alpha: 0.85),
+                ),
+                textAlign: TextAlign.center,
+              ),
+            const SizedBox(height: 16),
+            if (state.instruction != null && state.instruction!.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: cs.primary.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: cs.primary.withValues(alpha: 0.1),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline_rounded, color: cs.primary, size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        state.instruction!,
+                        style: getMediumStyle(
+                          fontSize: 13,
+                          color: cs.onSurface.withValues(alpha: 0.75),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 28),
+            // Call to action button to launch Campaign Screen
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: cs.primary,
+                foregroundColor: cs.onPrimary,
+                elevation: 4,
+                shadowColor: cs.primary.withValues(alpha: 0.3),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 28,
+                  vertical: 14,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              onPressed: () {
+                Navigator.pushNamed(context, '/campaign');
+              },
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.rocket_launch_rounded, size: 20),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Go to Campaigns',
+                    style: getBoldStyle(fontSize: 15, color: cs.onPrimary),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyFeedView(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 60),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.dynamic_feed_rounded,
+              size: 64,
+              color: cs.onSurface.withValues(alpha: .3),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'No posts yet',
+              style: getMediumStyle(
+                fontSize: 16,
+                color: cs.onSurface.withValues(alpha: .5),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

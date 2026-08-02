@@ -54,6 +54,7 @@ class MyApp extends StatelessWidget {
               themeMode: themeMode,
               onGenerateRoute: AppRoutes.onGenerateRoute,
               initialRoute: Routes.splashRoute,
+              navigatorObservers: [routeObserver],
             );
           },
         ),
@@ -61,3 +62,5 @@ class MyApp extends StatelessWidget {
     );
   }
 }
+
+final RouteObserver<ModalRoute<void>> routeObserver = RouteObserver<ModalRoute<void>>();

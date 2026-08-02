@@ -30,6 +30,9 @@ class AdminBloc extends Bloc<AdminEvent, AdminState> {
     on<ToggleUserSelection>(_onToggleUserSelection);
     on<UpdateSubscription>(_onUpdateSubscription);
     on<BulkUpdateSubscription>(_onBulkUpdateSubscription);
+    on<ClearMessages>((event, emit) {
+      emit(state.copyWith(errorMessage: '', successMessage: ''));
+    });
   }
 
   Future<void> _onLoadAll(LoadAllUsers event, Emitter<AdminState> emit) async {
@@ -129,6 +132,7 @@ class AdminBloc extends Bloc<AdminEvent, AdminState> {
         event.autolike,
         isFree: event.isFree,
         paymentMethod: event.paymentMethod,
+        txid: event.txid,
       );
       if (response.isSuccess) {
         _updateUserInList(emit, event.userId, autolike: event.autolike);

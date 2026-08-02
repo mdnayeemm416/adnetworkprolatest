@@ -1,7 +1,12 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:adnetwork/config/theme/styles_manager.dart';
+import 'package:adnetwork/config/theme/routes_config.dart';
 import 'package:adnetwork/core/extensions/extension.dart';
 import 'package:adnetwork/core/services/mobile_config_manager.dart';
+import 'package:adnetwork/core/services/api_client.dart';
+import 'package:adnetwork/core/services/token_storage.dart';
+import 'package:adnetwork/layers/dto/api_response.dart';
 import 'package:adnetwork/layers/data/model/campaign_link_model.dart';
 import 'package:adnetwork/layers/presentation/controller/campaign/campaign_bloc.dart';
 import 'package:adnetwork/layers/presentation/controller/profile/profile_bloc.dart';
@@ -16,7 +21,8 @@ import 'package:intl/intl.dart';
 import 'package:toastification/toastification.dart';
 
 class CampaignScreen extends StatefulWidget {
-  const CampaignScreen({super.key});
+  final bool isMandatory;
+  const CampaignScreen({super.key, this.isMandatory = false});
 
   @override
   State<CampaignScreen> createState() => _CampaignScreenState();
@@ -25,7 +31,10 @@ class CampaignScreen extends StatefulWidget {
 class _CampaignScreenState extends State<CampaignScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late TabController _tabController;
+  bool _autoplayActive = false;
   bool _campaignStarted = false;
+  final Set<String> _locallyCompletedAdIds = {};
+  bool _isAutoLikeEnabled = false;
 
   // Background timer tracking state
   Timer? _adTimer;
@@ -36,10 +45,43 @@ class _CampaignScreenState extends State<CampaignScreen>
   bool _isWatching = false;
   int _activeAdDuration = 15;
 
+  Future<void> _loadAutoLikeStatus() async {
+    final enabled = await TokenStorage.instance.isAutoLikeEnabled();
+    if (mounted) {
+      setState(() {
+        _isAutoLikeEnabled = enabled;
+      });
+    }
+  }
+
+  void _toggleAutoplay() {
+    if (!_isAutoLikeEnabled) {
+      _showSubscriptionDialog(context);
+      return;
+    }
+
+    setState(() {
+      _autoplayActive = !_autoplayActive;
+    });
+
+    if (_autoplayActive) {
+      _locallyCompletedAdIds.clear();
+      final state = context.read<CampaignBloc>().state;
+      final unlikedLinks = state.feedLinks
+          .where((l) => !l.isLiked && !_locallyCompletedAdIds.contains(l.id))
+          .toList();
+
+      if (unlikedLinks.isNotEmpty) {
+        _launchAd(unlikedLinks.first);
+      }
+    }
+  }
+
   @override
   void initState() {
     super.initState();
-    _activeAdDuration = int.tryParse(MobileConfigManager.instance.config.campaignSeconds) ?? 20;
+    _loadAutoLikeStatus();
+    _activeAdDuration = int.tryParse(MobileConfigManager.instance.config.campaignSecondsMin) ?? 15;
     _tabController = TabController(length: 2, vsync: this);
     WidgetsBinding.instance.addObserver(this);
 
@@ -84,6 +126,7 @@ class _CampaignScreenState extends State<CampaignScreen>
             _activeAdStartTime = null;
             _isWatching = false;
             _secondsRemaining = 0;
+            _autoplayActive = false;
           });
           _showEarlyCloseDialog();
         }
@@ -92,8 +135,11 @@ class _CampaignScreenState extends State<CampaignScreen>
   }
 
   Future<void> _launchAd(CampaignLinkModel campaign) async {
-    final adDuration =
-        int.tryParse(MobileConfigManager.instance.config.campaignSeconds) ?? 20;
+    final minSeconds = int.tryParse(MobileConfigManager.instance.config.campaignSecondsMin) ?? 15;
+    final maxSeconds = int.tryParse(MobileConfigManager.instance.config.campaignSecondsMax) ?? 25;
+    final adDuration = minSeconds >= maxSeconds
+        ? minSeconds
+        : minSeconds + Random().nextInt(maxSeconds - minSeconds + 1);
     final double height = MediaQuery.of(context).size.height;
 
     setState(() {
@@ -113,6 +159,7 @@ class _CampaignScreenState extends State<CampaignScreen>
         if (_secondsRemaining == 0) {
           _countdownTimer?.cancel();
           HapticFeedback.vibrate();
+          custom_tabs.closeCustomTabs();
         }
       }
     });
@@ -200,90 +247,52 @@ class _CampaignScreenState extends State<CampaignScreen>
     }
   }
 
-  void _onAdCompleted() {
-    if (_activeAdId == null) return;
+  BuildContext? _loaderContext;
 
-    final adId = _activeAdId!;
-
-    // Reward scoring
-    context.read<CampaignBloc>().add(LikeCampaignLink(adId));
-
-    setState(() {
-      _activeAdId = null;
-      _activeAdStartTime = null;
-      _isWatching = false;
-      _secondsRemaining = 0;
-    });
-  }
-
-  void _showEarlyCloseDialog() {
-    if (!mounted) return;
-    final cs = Theme.of(context).colorScheme;
+  void _showLoaderDialog(BuildContext context) {
+    if (_loaderContext != null) return;
 
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: cs.surface,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(24),
-            side: BorderSide(color: cs.error.withValues(alpha: .2), width: 1.5),
-          ),
-          title: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: cs.error.withValues(alpha: .1),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  Icons.warning_amber_rounded,
-                  color: cs.error,
-                  size: 24,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'বিজ্ঞাপনটি সম্পূর্ণ দেখুন',
-                  style: getBoldStyle(fontSize: 18, color: cs.onSurface),
-                ),
-              ),
-            ],
-          ),
-          content: Text(
-            'অনুগ্রহ করে বিজ্ঞাপনটি নিজে বন্ধ করবেন না, এটি ১৫ সেকেন্ড পর স্বয়ংক্রিয়ভাবে বন্ধ হয়ে যাবে। নিজে থেকে আগে বন্ধ করলে আপনার দেখার সময় গণনা করা হবে না এবং কোনো ক্রেডিট পাবেন না।',
-            style: getRegularStyle(
-              fontSize: 14,
-              color: cs.onSurface.withValues(alpha: .8),
-            ).copyWith(height: 1.5),
-          ),
-          actions: [
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: ElevatedButton(
-                onPressed: () => Navigator.pop(ctx),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: cs.primary,
-                  foregroundColor: cs.onPrimary,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  elevation: 0,
-                ),
-                child: Text(
-                  'ঠিক আছে',
-                  style: getBoldStyle(fontSize: 14, color: cs.onPrimary),
-                ),
-              ),
+        _loaderContext = ctx;
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            backgroundColor: Theme.of(context).colorScheme.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
             ),
-          ],
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 12),
+                const CircularProgressIndicator(),
+                const SizedBox(height: 20),
+                Text(
+                  'Completing campaign ad...',
+                  style: getMediumStyle(
+                    fontSize: 14,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
+            ),
+          ),
         );
       },
-    );
+    ).then((_) {
+      _loaderContext = null;
+    });
+  }
+
+  void _dismissLoaderDialog(BuildContext context) {
+    if (_loaderContext != null) {
+      Navigator.of(_loaderContext!).pop();
+      _loaderContext = null;
+    }
   }
 
   Future<bool> _showExitConfirmationDialog(int remainingAds) async {
@@ -383,10 +392,122 @@ class _CampaignScreenState extends State<CampaignScreen>
     return result ?? false;
   }
 
+  void _onAdCompleted() {
+    if (_activeAdId == null) return;
+
+    final adId = _activeAdId!;
+    _locallyCompletedAdIds.add(adId);
+
+    // Reward scoring
+    context.read<CampaignBloc>().add(LikeCampaignLink(adId));
+
+    setState(() {
+      _activeAdId = null;
+      _activeAdStartTime = null;
+      _isWatching = false;
+      _secondsRemaining = 0;
+    });
+  }
+
+  Future<void> _launchNextAdWithDelay() async {
+    // Wait for a brief moment for UI transition
+    await Future.delayed(const Duration(milliseconds: 2500));
+    if (!mounted) return;
+
+    final state = context.read<CampaignBloc>().state;
+    final unlikedLinks = state.feedLinks
+        .where((l) => !l.isLiked && !_locallyCompletedAdIds.contains(l.id))
+        .toList();
+
+    if (_autoplayActive && unlikedLinks.isNotEmpty) {
+      _launchAd(unlikedLinks.first);
+    } else {
+      setState(() {
+        _autoplayActive = false;
+      });
+    }
+  }
+
+  void _showEarlyCloseDialog() {
+    if (!mounted) return;
+    final cs = Theme.of(context).colorScheme;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: cs.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+            side: BorderSide(color: cs.error.withValues(alpha: .2), width: 1.5),
+          ),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: cs.error.withValues(alpha: .1),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.warning_amber_rounded,
+                  color: cs.error,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'বিজ্ঞাপনটি সম্পূর্ণ দেখুন',
+                  style: getBoldStyle(fontSize: 18, color: cs.onSurface),
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            'অনুগ্রহ করে বিজ্ঞাপনটি নিজে বন্ধ করবেন না, এটি ১৫ সেকেন্ড পর স্বয়ংক্রিয়ভাবে বন্ধ হয়ে যাবে। নিজে থেকে আগে বন্ধ করলে আপনার দেখার সময় গণনা করা হবে না এবং কোনো ক্রেডিট পাবেন না।',
+            style: getRegularStyle(
+              fontSize: 14,
+              color: cs.onSurface.withValues(alpha: .8),
+            ).copyWith(height: 1.5),
+          ),
+          actions: [
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton(
+                onPressed: () => Navigator.pop(ctx),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: cs.primary,
+                  foregroundColor: cs.onPrimary,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  elevation: 0,
+                ),
+                child: Text(
+                  'ঠিক আছে',
+                  style: getBoldStyle(fontSize: 14, color: cs.onPrimary),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+
+
   @override
   Widget build(BuildContext context) {
     final cs = context.colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    final state = context.watch<CampaignBloc>().state;
+    final unlikedLinks = state.feedLinks.where((l) => !l.isLiked).toList();
+    final canPop = !_campaignStarted || unlikedLinks.isEmpty;
 
     if (_isWatching) {
       final double progress = _activeAdDuration > 0
@@ -510,14 +631,18 @@ class _CampaignScreenState extends State<CampaignScreen>
       );
     }
 
-    final state = context.watch<CampaignBloc>().state;
-    final unlikedLinks = state.feedLinks.where((l) => !l.isLiked).toList();
-    final canPop = !_campaignStarted || unlikedLinks.isEmpty;
-
     return PopScope(
-      canPop: canPop,
+      canPop: widget.isMandatory ? false : canPop,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
+        if (widget.isMandatory) {
+          showToast(
+            context: context,
+            message: 'You must complete the campaigns to proceed.',
+            toastificationType: ToastificationType.warning,
+          );
+          return;
+        }
         final shouldExit = await _showExitConfirmationDialog(
           unlikedLinks.length,
         );
@@ -527,22 +652,61 @@ class _CampaignScreenState extends State<CampaignScreen>
       },
       child: BlocListener<CampaignBloc, CampaignState>(
         listenWhen: (previous, current) =>
-            previous.actionStatus != current.actionStatus,
+            previous.actionStatus != current.actionStatus ||
+            (widget.isMandatory &&
+                (previous.feedStatus != current.feedStatus ||
+                    previous.feedLinks != current.feedLinks)),
         listener: (context, state) {
-          if (state.actionStatus == CampaignActionStatus.success) {
+          if (state.actionStatus == CampaignActionStatus.loading) {
+            _showLoaderDialog(context);
+          } else if (state.actionStatus == CampaignActionStatus.success) {
+            _dismissLoaderDialog(context);
             showToast(
               context: context,
               message: state.actionMessage,
               toastificationType: ToastificationType.success,
             );
             context.read<CampaignBloc>().add(const ClearCampaignErrors());
+
+            if (widget.isMandatory) {
+              final unlikedLinks = state.feedLinks.where((l) => !l.isLiked).toList();
+              if (state.feedStatus == CampaignStatus.loaded && unlikedLinks.isEmpty) {
+                showToast(
+                  context: context,
+                  message: 'Campaign completed successfully! Navigating to feed...',
+                  toastificationType: ToastificationType.success,
+                );
+                Navigator.pushReplacementNamed(context, Routes.home);
+                return;
+              }
+            }
+
+            if (_autoplayActive) {
+              _launchNextAdWithDelay();
+            }
           } else if (state.actionStatus == CampaignActionStatus.error) {
+            _dismissLoaderDialog(context);
             showToast(
               context: context,
               message: state.actionMessage,
               toastificationType: ToastificationType.error,
             );
             context.read<CampaignBloc>().add(const ClearCampaignErrors());
+            if (_autoplayActive) {
+              _launchNextAdWithDelay();
+            }
+          }
+
+          if (widget.isMandatory && state.feedStatus == CampaignStatus.loaded) {
+            final unlikedLinks = state.feedLinks.where((l) => !l.isLiked).toList();
+            if (unlikedLinks.isEmpty) {
+              showToast(
+                context: context,
+                message: 'All campaigns completed. Navigating to feed...',
+                toastificationType: ToastificationType.success,
+              );
+              Navigator.pushReplacementNamed(context, Routes.home);
+            }
           }
         },
         child: Scaffold(
@@ -550,21 +714,24 @@ class _CampaignScreenState extends State<CampaignScreen>
           appBar: AppBar(
             backgroundColor: cs.surface,
             elevation: 0,
-            leading: IconButton(
-              icon: Icon(Icons.arrow_back_rounded, color: cs.onSurface),
-              onPressed: () async {
-                if (canPop) {
-                  Navigator.pop(context);
-                } else {
-                  final shouldExit = await _showExitConfirmationDialog(
-                    unlikedLinks.length,
-                  );
-                  if (shouldExit && context.mounted) {
-                    Navigator.pop(context);
-                  }
-                }
-              },
-            ),
+            automaticallyImplyLeading: !widget.isMandatory,
+            leading: widget.isMandatory
+                ? null
+                : IconButton(
+                    icon: Icon(Icons.arrow_back_rounded, color: cs.onSurface),
+                    onPressed: () async {
+                      if (canPop) {
+                        Navigator.pop(context);
+                      } else {
+                        final shouldExit = await _showExitConfirmationDialog(
+                          unlikedLinks.length,
+                        );
+                        if (shouldExit && context.mounted) {
+                          Navigator.pop(context);
+                        }
+                      }
+                    },
+                  ),
             title: Text(
               'Campaigns',
               style: getBoldStyle(fontSize: 20, color: cs.onSurface),
@@ -640,6 +807,8 @@ class _CampaignScreenState extends State<CampaignScreen>
                     _campaignStarted = true;
                   });
                 },
+                autoplayActive: _autoplayActive,
+                onToggleAutoplay: _toggleAutoplay,
                 onLaunchAd: _launchAd,
                 activeAdId: _activeAdId,
                 activeAdDuration: _activeAdDuration,
@@ -651,6 +820,302 @@ class _CampaignScreenState extends State<CampaignScreen>
       ),
     );
   }
+
+  void _showSubscriptionDialog(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          backgroundColor: Colors.transparent,
+          child: FutureBuilder<ApiResponse<dynamic>>(
+            future: ApiClient.instance.get<dynamic>(
+              '/api/getprice',
+              queryParams: {'appname': 'adnetworkpro'},
+              auth: true,
+            ),
+            builder: (context, snapshot) {
+              String priceText = 'লোড হচ্ছে...';
+              double? price;
+
+              if (snapshot.connectionState == ConnectionState.done) {
+                if (snapshot.hasData &&
+                    snapshot.data!.isSuccess &&
+                    snapshot.data!.data is Map) {
+                  final priceVal = snapshot.data!.data['price'];
+                  if (priceVal != null) {
+                    price = double.tryParse(priceVal.toString());
+                    if (price != null) {
+                      priceText = '$price ৳';
+                    } else {
+                      priceText = 'ফ্রি';
+                    }
+                  } else {
+                    priceText = 'ফ্রি';
+                  }
+                } else {
+                  priceText = 'মূল্য জানতে যোগাযোগ করুন';
+                }
+              }
+
+              return Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF1E1E2E) : Colors.white,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: cs.primary.withValues(alpha: 0.15),
+                    width: 1.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.25),
+                      blurRadius: 20,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Premium Icon with Gold Gradient
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withValues(alpha: 0.15),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: Colors.amber.shade700,
+                          width: 2,
+                        ),
+                      ),
+                      child: Icon(
+                        Icons.workspace_premium_rounded,
+                        color: Colors.amber.shade800,
+                        size: 48,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+
+                    // Dialog Title
+                    Text(
+                      'অটো প্লে সাবস্ক্রিপশন',
+                      style: getBoldStyle(
+                        fontSize: 22,
+                        color: isDark ? Colors.white : cs.onSurface,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Description
+                    Text(
+                      'বিজ্ঞাপন অটো প্লে করার মাধ্যমে খুব সহজেই কাজ সম্পন্ন করুন। এই প্রিমিয়াম ফিচারটি আনলক করতে নিচের নম্বরে সাবস্ক্রিপশন পেমেন্ট করুন।',
+                      style: getMediumStyle(
+                        fontSize: 14,
+                        color: isDark
+                            ? Colors.white.withValues(alpha: 0.7)
+                            : cs.onSurface.withValues(alpha: 0.7),
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Dynamic Price Section
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: Colors.amber.withValues(alpha: 0.3),
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.monetization_on_outlined,
+                            color: Colors.amber.shade800,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'সাবস্ক্রিপশন ফি: ',
+                            style: getMediumStyle(
+                              fontSize: 15,
+                              color: isDark ? Colors.white : cs.onSurface,
+                            ),
+                          ),
+                          if (snapshot.connectionState ==
+                              ConnectionState.waiting)
+                            const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.amber,
+                                ),
+                              ),
+                            )
+                          else
+                            Text(
+                              priceText,
+                              style: getBoldStyle(
+                                fontSize: 18,
+                                color: Colors.amber.shade800,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+
+                    // Payment Methods Label
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: cs.primary.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            'বিকাশ • নগদ • রকেট • উপায়',
+                            style: getBoldStyle(
+                              fontSize: 12,
+                              color: cs.primary,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Number Field with Copy Button
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? cs.onSurface.withValues(alpha: 0.05)
+                            : cs.primaryContainer,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: cs.primary.withValues(alpha: 0.15),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'পার্সোনাল নম্বর',
+                                style: getRegularStyle(
+                                  fontSize: 11,
+                                  color: isDark
+                                      ? Colors.white.withValues(alpha: 0.5)
+                                      : cs.onSurface.withValues(alpha: 0.5),
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '01401011049',
+                                style: getBoldStyle(
+                                  fontSize: 18,
+                                  color: isDark ? Colors.white : cs.onSurface,
+                                ),
+                              ),
+                            ],
+                          ),
+                          IconButton(
+                            onPressed: () {
+                              Clipboard.setData(
+                                const ClipboardData(text: '01401011049'),
+                              );
+                              Navigator.pop(context);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: const Text('নম্বরটি কপি করা হয়েছে!'),
+                                  backgroundColor: cs.primary,
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                ),
+                              );
+                            },
+                            icon: Icon(Icons.copy_rounded, color: cs.primary),
+                            tooltip: 'কপি করুন',
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Instructions
+                    Text(
+                      'টাকা পাঠানোর পর ট্রানজেকশন আইডি এবং আপনার ইউজারনেম সহ এডমিনের সাথে যোগাযোগ করুন।',
+                      style: getRegularStyle(
+                        fontSize: 12,
+                        color: isDark
+                            ? Colors.white.withValues(alpha: 0.5)
+                            : cs.onSurface.withValues(alpha: 0.5),
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 24),
+
+                    // Action Buttons
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: cs.primary,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          elevation: 0,
+                        ),
+                        onPressed: () => Navigator.pop(context),
+                        child: Text(
+                          'বন্ধ করুন',
+                          style: getBoldStyle(
+                            fontSize: 15,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -660,6 +1125,8 @@ class _CampaignFeedTab extends StatelessWidget {
   final bool isDark;
   final bool campaignStarted;
   final VoidCallback onStartCampaign;
+  final bool autoplayActive;
+  final VoidCallback onToggleAutoplay;
   final Function(CampaignLinkModel) onLaunchAd;
   final String? activeAdId;
   final int activeAdDuration;
@@ -668,6 +1135,8 @@ class _CampaignFeedTab extends StatelessWidget {
     required this.isDark,
     required this.campaignStarted,
     required this.onStartCampaign,
+    required this.autoplayActive,
+    required this.onToggleAutoplay,
     required this.onLaunchAd,
     required this.activeAdId,
     required this.activeAdDuration,
@@ -784,61 +1253,15 @@ class _CampaignFeedTab extends StatelessWidget {
             );
           }
 
-          final unlikedLinks = state.feedLinks
-              .where((l) => !l.isLiked)
-              .toList();
+          final status = state.campaignStatus;
+          final bool isAvailable = status?.campaignsAvailable ?? true;
+          final int timeRemaining = status?.timeRemaining ?? 0;
+          final String timeReadable =
+              status?.timeRemainingReadable ?? "0 hours and 0 minutes";
+          final int completedToday = status?.completedToday ?? 0;
+          final bool isOnCooldown = !isAvailable || timeRemaining > 0;
 
-          if (state.feedLinks.isEmpty) {
-            return Center(
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        color: cs.primary.withValues(alpha: .05),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        Icons.track_changes_rounded,
-                        size: 48,
-                        color: cs.primary.withValues(alpha: .4),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    Text(
-                      'No Campaigns Available',
-                      style: getSemiBoldStyle(
-                        fontSize: 18,
-                        color: cs.onSurface.withValues(alpha: .6),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Pull down to refresh and try again',
-                      style: getRegularStyle(
-                        fontSize: 13,
-                        color: cs.onSurface.withValues(alpha: .35),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
-
-          // Initial "Start Campaign" state card
           if (!campaignStarted) {
-            final status = state.campaignStatus;
-            final bool isAvailable = status?.campaignsAvailable ?? true;
-            final int timeRemaining = status?.timeRemaining ?? 0;
-            final String timeReadable =
-                status?.timeRemainingReadable ?? "0 hours and 0 minutes";
-            final int completedToday = status?.completedToday ?? 0;
-            final bool isOnCooldown = !isAvailable || timeRemaining > 0;
-
             return Center(
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
@@ -1051,50 +1474,45 @@ class _CampaignFeedTab extends StatelessWidget {
                               ],
                             ),
                           ),
+                        ] else ...[
+                          const SizedBox(height: 28),
+                          Divider(color: cs.onSurface.withValues(alpha: .06)),
+                          const SizedBox(height: 20),
+                          // Premium Stat Cards Row
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _StatCard(
+                                  title: 'Ads Available',
+                                  value: '${state.feedLinks.length}',
+                                  icon: Icons.filter_none_rounded,
+                                  color: cs.primary,
+                                  isDark: isDark,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: _StatCard(
+                                  title: 'Completed Today',
+                                  value: '$completedToday',
+                                  icon: Icons.check_circle_outline_rounded,
+                                  color: Colors.green,
+                                  isDark: isDark,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: _StatCard(
+                                  title: 'Status',
+                                  value: 'Ready',
+                                  icon: Icons.flash_on_rounded,
+                                  color: Colors.blue,
+                                  isDark: isDark,
+                                ),
+                              ),
+                            ],
+                          ),
                         ],
-                        const SizedBox(height: 28),
-                        Divider(color: cs.onSurface.withValues(alpha: .06)),
-                        const SizedBox(height: 20),
-                        // Premium Stat Cards Row
-                        Row(
-                          children: [
-                            Expanded(
-                              child: _StatCard(
-                                title: 'Ads Available',
-                                value: isOnCooldown
-                                    ? '0'
-                                    : '${state.feedLinks.length}',
-                                icon: Icons.filter_none_rounded,
-                                color: cs.primary,
-                                isDark: isDark,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: _StatCard(
-                                title: 'Completed Today',
-                                value: '$completedToday',
-                                icon: Icons.check_circle_outline_rounded,
-                                color: Colors.green,
-                                isDark: isDark,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: _StatCard(
-                                title: 'Status',
-                                value: isOnCooldown ? 'Cooldown' : 'Ready',
-                                icon: isOnCooldown
-                                    ? Icons.timer_rounded
-                                    : Icons.flash_on_rounded,
-                                color: isOnCooldown
-                                    ? Colors.orange
-                                    : Colors.blue,
-                                isDark: isDark,
-                              ),
-                            ),
-                          ],
-                        ),
                         const SizedBox(height: 32),
                         GradientButton(
                           buttonName: isOnCooldown
@@ -1108,6 +1526,51 @@ class _CampaignFeedTab extends StatelessWidget {
                       ],
                     ),
                   ),
+                ),
+              ),
+            );
+          }
+
+          final unlikedLinks = state.feedLinks
+              .where((l) => !l.isLiked)
+              .toList();
+
+          if (state.feedLinks.isEmpty) {
+            return Center(
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: cs.primary.withValues(alpha: .05),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.track_changes_rounded,
+                        size: 48,
+                        color: cs.primary.withValues(alpha: .4),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      'No Campaigns Available',
+                      style: getSemiBoldStyle(
+                        fontSize: 18,
+                        color: cs.onSurface.withValues(alpha: .6),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Pull down to refresh and try again',
+                      style: getRegularStyle(
+                        fontSize: 13,
+                        color: cs.onSurface.withValues(alpha: .35),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             );
@@ -1154,19 +1617,22 @@ class _CampaignFeedTab extends StatelessWidget {
             );
           }
 
-          // Active ad list
+          // Active ad list with Auto Play control bar at the top
           return ListView.builder(
             physics: const BouncingScrollPhysics(),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            itemCount: unlikedLinks.length,
+            itemCount: unlikedLinks.length + 1,
             itemBuilder: (context, index) {
-              final campaign = unlikedLinks[index];
+              if (index == 0) {
+                return _buildAutoplayControlBar(context, state.feedLinks.length, unlikedLinks.length);
+              }
+              final campaign = unlikedLinks[index - 1];
               final originalIndex = state.feedLinks.indexWhere(
                 (l) => l.id == campaign.id,
               );
               return _CampaignFeedCard(
                 campaign: campaign,
-                index: originalIndex != -1 ? originalIndex : index,
+                index: originalIndex != -1 ? originalIndex : (index - 1),
                 isDark: isDark,
                 onTap: () {
                   if (activeAdId == null) {
@@ -1179,6 +1645,217 @@ class _CampaignFeedTab extends StatelessWidget {
             },
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildAutoplayControlBar(BuildContext context, int totalAds, int remainingAds) {
+    final cs = Theme.of(context).colorScheme;
+    final completedAds = totalAds - remainingAds;
+    final double percent = totalAds > 0 ? (completedAds / totalAds) : 0.0;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16, top: 4),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: autoplayActive
+              ? [
+                  cs.primary.withValues(alpha: .15),
+                  cs.secondary.withValues(alpha: .08),
+                ]
+              : [
+                  cs.onSurface.withValues(alpha: .04),
+                  cs.onSurface.withValues(alpha: .02),
+                ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: autoplayActive
+              ? cs.primary.withValues(alpha: .3)
+              : cs.onSurface.withValues(alpha: .1),
+          width: 1.5,
+        ),
+        boxShadow: [
+          if (autoplayActive)
+            BoxShadow(
+              color: cs.primary.withValues(alpha: .08),
+              blurRadius: 16,
+              offset: const Offset(0, 8),
+            ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              _AutoplayStatusDot(active: autoplayActive),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      autoplayActive ? 'Auto Play Running' : 'Auto Play Paused',
+                      style: getBoldStyle(
+                        fontSize: 15,
+                        color: autoplayActive ? cs.primary : cs.onSurface.withValues(alpha: .8),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      autoplayActive ? 'Watching ads sequentially...' : 'Sequence is idle',
+                      style: getRegularStyle(
+                        fontSize: 11,
+                        color: cs.onSurface.withValues(alpha: .5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                onPressed: onToggleAutoplay,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: autoplayActive ? Colors.orange.shade700 : cs.primary,
+                  foregroundColor: Colors.white,
+                  elevation: autoplayActive ? 0 : 2,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                icon: Icon(
+                  autoplayActive ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                  size: 18,
+                ),
+                label: Text(
+                  autoplayActive ? 'Pause' : 'Start Auto Play',
+                  style: getBoldStyle(fontSize: 12, color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Campaign Progress',
+                style: getSemiBoldStyle(
+                  fontSize: 11,
+                  color: cs.onSurface.withValues(alpha: .6),
+                ),
+              ),
+              Text(
+                '$completedAds / $totalAds Ads Completed',
+                style: getBoldStyle(
+                  fontSize: 11,
+                  color: cs.primary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: LinearProgressIndicator(
+              value: percent,
+              minHeight: 6,
+              backgroundColor: autoplayActive
+                  ? cs.primary.withValues(alpha: .1)
+                  : cs.onSurface.withValues(alpha: .06),
+              valueColor: AlwaysStoppedAnimation<Color>(
+                autoplayActive ? cs.primary : cs.onSurface.withValues(alpha: .4),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AutoplayStatusDot extends StatefulWidget {
+  final bool active;
+  const _AutoplayStatusDot({required this.active});
+
+  @override
+  State<_AutoplayStatusDot> createState() => _AutoplayStatusDotState();
+}
+
+class _AutoplayStatusDotState extends State<_AutoplayStatusDot>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _animation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    );
+    _animation = Tween<double>(begin: 0.4, end: 1.0).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
+    if (widget.active) {
+      _controller.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _AutoplayStatusDot oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !oldWidget.active) {
+      _controller.repeat(reverse: true);
+    } else if (!widget.active && oldWidget.active) {
+      _controller.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final dotColor = widget.active ? Colors.green : Colors.grey;
+
+    if (!widget.active) {
+      return Container(
+        width: 12,
+        height: 12,
+        decoration: BoxDecoration(
+          color: dotColor.withValues(alpha: .6),
+          shape: BoxShape.circle,
+          border: Border.all(color: cs.surface, width: 2),
+        ),
+      );
+    }
+
+    return FadeTransition(
+      opacity: _animation,
+      child: Container(
+        width: 12,
+        height: 12,
+        decoration: BoxDecoration(
+          color: dotColor,
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: dotColor.withValues(alpha: .5),
+              blurRadius: 6,
+              spreadRadius: 2,
+            ),
+          ],
+          border: Border.all(color: cs.surface, width: 2),
+        ),
       ),
     );
   }
@@ -1275,7 +1952,7 @@ class _CampaignFeedCard extends StatelessWidget {
           const SizedBox(height: 16),
           // Yield explanation content
           Text(
-            'Launch this campaign task and watch the sponsor ad for ${MobileConfigManager.instance.config.campaignSeconds} seconds to receive your yield score credit. The tab will automatically close on completion.',
+            'Launch this campaign task and watch the sponsor ad for ${MobileConfigManager.instance.config.campaignSecondsMin} to ${MobileConfigManager.instance.config.campaignSecondsMax} seconds to receive your yield score credit. The tab will automatically close on completion.',
             style: getRegularStyle(
               fontSize: 12,
               color: cs.onSurface.withValues(alpha: .6),
@@ -1315,72 +1992,6 @@ class _CampaignFeedCard extends StatelessWidget {
                 ],
               ),
             ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StatCard extends StatelessWidget {
-  final String title;
-  final String value;
-  final IconData icon;
-  final Color color;
-  final bool isDark;
-
-  const _StatCard({
-    required this.title,
-    required this.value,
-    required this.icon,
-    required this.color,
-    required this.isDark,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
-      decoration: BoxDecoration(
-        color: isDark ? cs.onSurface.withValues(alpha: .03) : cs.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withValues(alpha: .15), width: 1),
-        boxShadow: [
-          if (!isDark)
-            BoxShadow(
-              color: color.withValues(alpha: .04),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: .1),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, size: 18, color: color),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            value,
-            style: getBoldStyle(fontSize: 16, color: cs.onSurface),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 2),
-          Text(
-            title,
-            style: getRegularStyle(
-              fontSize: 10,
-              color: cs.onSurface.withValues(alpha: .5),
-            ),
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -1938,6 +2549,72 @@ class _MyCampaignCard extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+class _StatCard extends StatelessWidget {
+  final String title;
+  final String value;
+  final IconData icon;
+  final Color color;
+  final bool isDark;
+
+  const _StatCard({
+    required this.title,
+    required this.value,
+    required this.icon,
+    required this.color,
+    required this.isDark,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+      decoration: BoxDecoration(
+        color: isDark ? cs.onSurface.withValues(alpha: .03) : cs.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: .15), width: 1),
+        boxShadow: [
+          if (!isDark)
+            BoxShadow(
+              color: color.withValues(alpha: .04),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: .1),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, size: 18, color: color),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            value,
+            style: getBoldStyle(fontSize: 16, color: cs.onSurface),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            title,
+            style: getRegularStyle(
+              fontSize: 10,
+              color: cs.onSurface.withValues(alpha: .5),
+            ),
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
     );
   }
 }
