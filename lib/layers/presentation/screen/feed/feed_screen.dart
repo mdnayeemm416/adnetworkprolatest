@@ -12,6 +12,7 @@ import 'package:adnetwork/main.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:adnetwork/core/services/token_storage.dart';
+import 'package:adnetwork/core/services/autoplay_manager.dart';
 import 'package:flutter/services.dart';
 import 'package:adnetwork/core/services/api_client.dart';
 import 'package:adnetwork/layers/dto/api_response.dart';
@@ -54,6 +55,11 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
     _loadOverlayOpacity();
     // Keep screen awake while app is in foreground
     WakelockPlus.enable();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _checkAutoStartAutoPlay();
+      }
+    });
   }
 
   @override
@@ -69,6 +75,19 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
       context.read<NoticeBloc>().add(const LoadNotices());
       context.read<ProfileBloc>().add(const LoadProfileStats());
       context.read<ExploreBloc>().add(const RefreshExplore());
+      _checkAutoStartAutoPlay();
+    }
+  }
+
+  void _checkAutoStartAutoPlay() {
+    if (AutoPlayManager.shouldAutoStartFeedAutoPlay) {
+      AutoPlayManager.shouldAutoStartFeedAutoPlay = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_isAutoScrolling) {
+          final state = context.read<FeedBloc>().state;
+          _toggleAutoPlay(state);
+        }
+      });
     }
   }
 
@@ -140,8 +159,6 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
     _opacityDebounceTimer?.cancel();
     _scrollController.dispose();
     _pip.dispose();
-    // Release wakelock when leaving the screen
-    WakelockPlus.disable();
     super.dispose();
   }
 

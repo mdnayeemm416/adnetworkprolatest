@@ -18,7 +18,7 @@ class MyLinksScreen extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     
     final user = context.watch<ProfileBloc>().state.currentUser;
-    final maxLinks = user?.role == 'admin' ? 70 : 20;
+    final maxLinks = user?.role == 'admin' ? 70 : 10;
 
     return BlocConsumer<LinkBloc, LinkState>(
       listener: (context, state) {

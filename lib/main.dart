@@ -9,6 +9,7 @@ import 'package:adnetwork/layers/data/repo/remote/campaign_repository.dart';
 import 'package:adnetwork/layers/presentation/controller/profile/profile_bloc.dart';
 import 'package:adnetwork/layers/presentation/controller/theme/theme_cubit.dart';
 import 'package:adnetwork/layers/presentation/controller/campaign/campaign_bloc.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -16,6 +17,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await MobileConfigManager.instance.init();
   await LinkQueueManager.instance.init();
+  await WakelockPlus.enable();
   runApp(const MyApp());
 }
 

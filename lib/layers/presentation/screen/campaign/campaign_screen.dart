@@ -6,6 +6,7 @@ import 'package:adnetwork/core/extensions/extension.dart';
 import 'package:adnetwork/core/services/mobile_config_manager.dart';
 import 'package:adnetwork/core/services/api_client.dart';
 import 'package:adnetwork/core/services/token_storage.dart';
+import 'package:adnetwork/core/services/autoplay_manager.dart';
 import 'package:adnetwork/layers/dto/api_response.dart';
 import 'package:adnetwork/layers/data/model/campaign_link_model.dart';
 import 'package:adnetwork/layers/presentation/controller/campaign/campaign_bloc.dart';
@@ -54,6 +55,20 @@ class _CampaignScreenState extends State<CampaignScreen>
     }
   }
 
+  void _navigateToFeedAfterCampaignComplete() {
+    if (!mounted) return;
+    showToast(
+      context: context,
+      message: 'Campaign completed! Navigating to feed...',
+      toastificationType: ToastificationType.success,
+    );
+    if (Navigator.canPop(context)) {
+      Navigator.pop(context);
+    } else {
+      Navigator.pushReplacementNamed(context, Routes.home);
+    }
+  }
+
   void _toggleAutoplay() {
     if (!_isAutoLikeEnabled) {
       _showSubscriptionDialog(context);
@@ -65,6 +80,7 @@ class _CampaignScreenState extends State<CampaignScreen>
     });
 
     if (_autoplayActive) {
+      AutoPlayManager.shouldAutoStartFeedAutoPlay = true;
       _locallyCompletedAdIds.clear();
       final state = context.read<CampaignBloc>().state;
       final unlikedLinks = state.feedLinks
@@ -73,7 +89,11 @@ class _CampaignScreenState extends State<CampaignScreen>
 
       if (unlikedLinks.isNotEmpty) {
         _launchAd(unlikedLinks.first);
+      } else {
+        _navigateToFeedAfterCampaignComplete();
       }
+    } else {
+      AutoPlayManager.shouldAutoStartFeedAutoPlay = false;
     }
   }
 
@@ -422,9 +442,14 @@ class _CampaignScreenState extends State<CampaignScreen>
     if (_autoplayActive && unlikedLinks.isNotEmpty) {
       _launchAd(unlikedLinks.first);
     } else {
+      final wasAutoplay = _autoplayActive;
       setState(() {
         _autoplayActive = false;
       });
+      if (wasAutoplay && unlikedLinks.isEmpty) {
+        AutoPlayManager.shouldAutoStartFeedAutoPlay = true;
+        _navigateToFeedAfterCampaignComplete();
+      }
     }
   }
 
@@ -653,9 +678,8 @@ class _CampaignScreenState extends State<CampaignScreen>
       child: BlocListener<CampaignBloc, CampaignState>(
         listenWhen: (previous, current) =>
             previous.actionStatus != current.actionStatus ||
-            (widget.isMandatory &&
-                (previous.feedStatus != current.feedStatus ||
-                    previous.feedLinks != current.feedLinks)),
+            previous.feedStatus != current.feedStatus ||
+            previous.feedLinks != current.feedLinks,
         listener: (context, state) {
           if (state.actionStatus == CampaignActionStatus.loading) {
             _showLoaderDialog(context);
@@ -668,17 +692,11 @@ class _CampaignScreenState extends State<CampaignScreen>
             );
             context.read<CampaignBloc>().add(const ClearCampaignErrors());
 
-            if (widget.isMandatory) {
-              final unlikedLinks = state.feedLinks.where((l) => !l.isLiked).toList();
-              if (state.feedStatus == CampaignStatus.loaded && unlikedLinks.isEmpty) {
-                showToast(
-                  context: context,
-                  message: 'Campaign completed successfully! Navigating to feed...',
-                  toastificationType: ToastificationType.success,
-                );
-                Navigator.pushReplacementNamed(context, Routes.home);
-                return;
-              }
+            final unlikedLinks = state.feedLinks.where((l) => !l.isLiked).toList();
+            if (state.feedStatus == CampaignStatus.loaded && unlikedLinks.isEmpty) {
+              AutoPlayManager.shouldAutoStartFeedAutoPlay = true;
+              _navigateToFeedAfterCampaignComplete();
+              return;
             }
 
             if (_autoplayActive) {
@@ -697,15 +715,13 @@ class _CampaignScreenState extends State<CampaignScreen>
             }
           }
 
-          if (widget.isMandatory && state.feedStatus == CampaignStatus.loaded) {
+          // When feed loads and all campaigns are already done or no campaigns exist,
+          // navigate to feed and auto-start auto-play.
+          if (state.feedStatus == CampaignStatus.loaded) {
             final unlikedLinks = state.feedLinks.where((l) => !l.isLiked).toList();
-            if (unlikedLinks.isEmpty) {
-              showToast(
-                context: context,
-                message: 'All campaigns completed. Navigating to feed...',
-                toastificationType: ToastificationType.success,
-              );
-              Navigator.pushReplacementNamed(context, Routes.home);
+            if (unlikedLinks.isEmpty || state.feedLinks.isEmpty) {
+              AutoPlayManager.shouldAutoStartFeedAutoPlay = true;
+              _navigateToFeedAfterCampaignComplete();
             }
           }
         },

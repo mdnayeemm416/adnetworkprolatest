@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:adnetwork/core/models/app_update_model.dart';
 import 'package:adnetwork/layers/data/repo/remote/app_update_repository.dart';
@@ -152,7 +153,10 @@ class AppUpdateService {
                       ),
                       onPressed: () async {
                         if (isDownloaded) {
-                          OpenFilex.open(savedFilePath);
+                          OpenFilex.open(
+                            savedFilePath,
+                            type: 'application/vnd.android.package-archive',
+                          );
                           return;
                         }
 
@@ -170,7 +174,10 @@ class AppUpdateService {
                         cancelToken = CancelToken();
 
                         try {
-                          final dir = await getApplicationSupportDirectory();
+                          final dir = Platform.isAndroid
+                              ? (await getExternalStorageDirectory() ??
+                                  await getTemporaryDirectory())
+                              : await getApplicationSupportDirectory();
                           savedFilePath =
                               '${dir.path}/update_${updateData.version}.apk';
 
@@ -192,7 +199,10 @@ class AppUpdateService {
                             isDownloaded = true;
                           });
 
-                          OpenFilex.open(savedFilePath);
+                          OpenFilex.open(
+                            savedFilePath,
+                            type: 'application/vnd.android.package-archive',
+                          );
                         } catch (e) {
                           if (e is DioException && CancelToken.isCancel(e)) {
                             // User cancelled
