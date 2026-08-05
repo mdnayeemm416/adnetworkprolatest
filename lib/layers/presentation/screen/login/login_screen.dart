@@ -222,6 +222,8 @@ class _LoginScreenState extends State<LoginScreen>
               }
 
               context.read<ProfileBloc>().add(const LoadProfile());
+              TokenStorage.instance.saveFeedAutoplay(0);
+              TokenStorage.instance.saveCampaignAutoplay(0);
 
               final config = MobileConfigManager.instance.config;
               if (config.campaignMust == "1" || config.campaignMust == "1") {
@@ -254,8 +256,10 @@ class _LoginScreenState extends State<LoginScreen>
                       );
                       Navigator.pushReplacementNamed(
                         context,
-                        Routes.campaign,
-                        arguments: {'isMandatory': true},
+                        Routes.home,
+                        arguments: {
+                          'initialIndex': 2,
+                        },
                       );
                       return;
                     }

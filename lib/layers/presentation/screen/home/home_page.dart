@@ -16,32 +16,140 @@ import 'package:adnetwork/layers/presentation/screen/explore/explore_screen.dart
 import 'package:adnetwork/layers/presentation/screen/feed/feed_screen.dart';
 import 'package:adnetwork/layers/presentation/screen/links/my_links_screen.dart';
 import 'package:adnetwork/layers/presentation/screen/profile/profile_screen.dart';
+import 'package:adnetwork/layers/presentation/screen/campaign/campaign_screen.dart';
+import 'package:adnetwork/layers/presentation/controller/campaign/campaign_bloc.dart';
 import 'package:adnetwork/layers/presentation/widget/link_queue_overlay.dart';
 import 'package:adnetwork/layers/presentation/widget/user_avatar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final int? initialIndex;
+  const HomePage({
+    super.key,
+    this.initialIndex,
+  });
   @override
-  State<HomePage> createState() => _HomePageState();
+  State<HomePage> createState() => HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class HomePageState extends State<HomePage> {
   int _idx = 0;
-  static const _labels = ['Feed', 'My Links', 'Explore', 'Profile'];
+  BuildContext? _descendantContext;
+
+  int getCurrentIndex() => _idx;
+
+  void _showCampaignLockDialog(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    showDialog(
+      context: context,
+      builder: (dialogCtx) {
+        return AlertDialog(
+          backgroundColor: cs.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: BorderSide(
+              color: cs.primary.withValues(alpha: 0.2),
+              width: 1.5,
+            ),
+          ),
+          title: Row(
+            children: [
+              Icon(Icons.lock_rounded, color: cs.primary, size: 28),
+              const SizedBox(width: 12),
+              Text(
+                'ফিড লক করা আছে',
+                style: getBoldStyle(fontSize: 18, color: cs.onSurface),
+              ),
+            ],
+          ),
+          content: Text(
+            'ফিড পেজের লক খোলার জন্য অনুগ্রহ করে ১টি সম্পূর্ণ ক্যাম্পেইন সম্পন্ন করুন।',
+            style: getRegularStyle(
+              fontSize: 14,
+              color: cs.onSurface.withValues(alpha: 0.8),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx),
+              child: Text(
+                'বন্ধ করুন',
+                style: getMediumStyle(
+                  fontSize: 14,
+                  color: cs.onSurface.withValues(alpha: 0.5),
+                ),
+              ),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: cs.primary,
+                foregroundColor: cs.onPrimary,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              onPressed: () {
+                Navigator.pop(dialogCtx);
+                setIndex(2); // Go to Campaigns tab
+              },
+              child: Text(
+                'ক্যাম্পেইনে যান',
+                style: getBoldStyle(fontSize: 14, color: cs.onPrimary),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void setIndex(int index, {bool bypassLock = false}) {
+    if (index == 0 && !bypassLock) {
+      final campaignState = context.read<CampaignBloc>().state;
+      final hasAvailableCampaigns = campaignState.campaignStatus?.campaignsAvailable ?? false;
+      if (hasAvailableCampaigns) {
+        _showCampaignLockDialog(context);
+        return;
+      }
+    }
+    setState(() {
+      _idx = index;
+    });
+
+    if (_descendantContext != null) {
+      if (index == 0) {
+        final feedBloc = _descendantContext!.read<FeedBloc>();
+        if (feedBloc.state.status == FeedStatus.initial) {
+          feedBloc.add(const LoadFeed());
+        }
+        _descendantContext!.read<NoticeBloc>().add(const LoadNotices());
+      } else if (index == 1) {
+        _descendantContext!.read<LinkBloc>().add(const LoadMyLinks());
+      } else if (index == 2) {
+        final campaignBloc = _descendantContext!.read<CampaignBloc>();
+        campaignBloc.add(const LoadCampaignFeed());
+        campaignBloc.add(const LoadMyCampaigns());
+        campaignBloc.add(const LoadCampaignCompletions());
+        campaignBloc.add(const LoadCampaignStatus());
+      } else if (index == 3) {
+        _descendantContext!.read<ExploreBloc>().add(const LoadExplore());
+      } else if (index == 4) {
+        _descendantContext!.read<ProfileBloc>().add(const LoadProfileStats());
+      }
+    }
+  }
+
+  static const _labels = ['Feed', 'My Links', 'Campaign', 'Explore', 'Profile'];
   static const _icons = [
     Icons.dynamic_feed_rounded,
     Icons.link_rounded,
+    Icons.track_changes_rounded,
     Icons.explore_rounded,
     Icons.person_rounded,
   ];
-  final _pages = const [
-    FeedScreen(),
-    MyLinksScreen(),
-    ExploreScreen(),
-    ProfileScreen(),
-  ];
+
 
   Timer? _vpnDnsCheckTimer;
   bool _isDialogShowing = false;
@@ -50,12 +158,34 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialIndex != null) {
+      _idx = widget.initialIndex!;
+    }
     // Load stats once on initial feed load
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         context.read<ProfileBloc>().add(const LoadProfileStats());
         // Run update check in the background after login/navigation
         AppUpdateService.checkAndShowUpdate(context);
+
+        if (_descendantContext != null) {
+          if (_idx == 0) {
+            _descendantContext!.read<FeedBloc>().add(const LoadFeed());
+            _descendantContext!.read<NoticeBloc>().add(const LoadNotices());
+          } else if (_idx == 1) {
+            _descendantContext!.read<LinkBloc>().add(const LoadMyLinks());
+          } else if (_idx == 2) {
+            final campaignBloc = _descendantContext!.read<CampaignBloc>();
+            campaignBloc.add(const LoadCampaignFeed());
+            campaignBloc.add(const LoadMyCampaigns());
+            campaignBloc.add(const LoadCampaignCompletions());
+            campaignBloc.add(const LoadCampaignStatus());
+          } else if (_idx == 3) {
+            _descendantContext!.read<ExploreBloc>().add(const LoadExplore());
+          } else if (_idx == 4) {
+            _descendantContext!.read<ProfileBloc>().add(const LoadProfileStats());
+          }
+        }
       }
     });
     _startVpnDnsCheck();
@@ -195,29 +325,32 @@ class _HomePageState extends State<HomePage> {
 
     final linkRepo = context.read<LinkRepository>();
 
+    final pages = [
+      FeedScreen(isActive: _idx == 0),
+      const MyLinksScreen(),
+      CampaignScreen(isTab: true, isActive: _idx == 2),
+      const ExploreScreen(),
+      const ProfileScreen(),
+    ];
+
     return MultiBlocProvider(
       providers: [
         BlocProvider(
-          create: (_) =>
-              FeedBloc(linkRepository: linkRepo)..add(const LoadFeed()),
+          create: (_) => FeedBloc(linkRepository: linkRepo),
         ),
         BlocProvider(
-          create: (_) =>
-              LinkBloc(linkRepository: linkRepo)..add(const LoadMyLinks()),
+          create: (_) => LinkBloc(linkRepository: linkRepo),
         ),
         BlocProvider(
-          create: (_) =>
-              ExploreBloc(userRepository: context.read<UserRepository>())
-                ..add(const LoadExplore()),
+          create: (_) => ExploreBloc(userRepository: context.read<UserRepository>()),
         ),
         BlocProvider(
-          create: (_) =>
-              NoticeBloc(noticeRepository: NoticeRepository())
-                ..add(const LoadNotices()),
+          create: (_) => NoticeBloc(noticeRepository: NoticeRepository()),
         ),
       ],
       child: Builder(
         builder: (context) {
+          _descendantContext = context;
           return Scaffold(
             backgroundColor: cs.surface,
             drawer: Drawer(
@@ -332,34 +465,29 @@ class _HomePageState extends State<HomePage> {
                               children: [
                                 const SizedBox(height: 8),
                                 ...List.generate(
-                                  4,
+                                  5,
                                   (i) => _Item(
                                     icon: _icons[i],
                                     label: _labels[i],
                                     active: _idx == i,
                                     onTap: () {
-                                      if (i == 0) {
-                                        context.read<FeedBloc>().add(
-                                          const RefreshFeed(),
-                                        );
-                                        context.read<NoticeBloc>().add(
-                                          const LoadNotices(),
-                                        );
-                                      } else if (i == 1) {
-                                        context.read<LinkBloc>().add(
-                                          const LoadMyLinks(),
-                                        );
-                                      } else if (i == 2) {
-                                        context.read<ExploreBloc>().add(
-                                          const RefreshExplore(),
-                                        );
-                                      } else if (i == 3) {
-                                        context.read<ProfileBloc>().add(
-                                          const LoadProfileStats(),
-                                        );
-                                      }
-                                      setState(() => _idx = i);
                                       Navigator.pop(context);
+                                      if (i == 0) {
+                                        final campaignState = context.read<CampaignBloc>().state;
+                                        final hasAvailableCampaigns = campaignState.campaignStatus?.campaignsAvailable ?? false;
+                                        if (hasAvailableCampaigns) {
+                                          _showCampaignLockDialog(context);
+                                          return;
+                                        }
+                                        context.read<FeedBloc>().add(const RefreshFeed());
+                                        context.read<NoticeBloc>().add(const LoadNotices());
+                                        setState(() => _idx = 0);
+                                      } else if (i == 3) {
+                                        context.read<ExploreBloc>().add(const RefreshExplore());
+                                        setState(() => _idx = 3);
+                                      } else {
+                                        setIndex(i);
+                                      }
                                     },
                                   ),
                                 ),
@@ -388,15 +516,6 @@ class _HomePageState extends State<HomePage> {
                                   onTap: () {
                                     Navigator.pop(context);
                                     Navigator.pushNamed(context, '/settings');
-                                  },
-                                ),
-                                _Item(
-                                  icon: Icons.track_changes_rounded,
-                                  label: 'Campaign',
-                                  active: false,
-                                  onTap: () {
-                                    Navigator.pop(context);
-                                    Navigator.pushNamed(context, '/campaign');
                                   },
                                 ),
                                 // Admin panel — visible for admin and moderator users
@@ -552,7 +671,7 @@ class _HomePageState extends State<HomePage> {
                               alignment: Alignment.topCenter,
                               child: IndexedStack(
                                 index: _idx,
-                                children: _pages,
+                                children: pages,
                               ),
                             ),
                           ),

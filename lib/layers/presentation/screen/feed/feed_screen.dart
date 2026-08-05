@@ -10,9 +10,9 @@ import 'package:adnetwork/layers/presentation/widget/suggested_user_card.dart';
 import 'package:flutter/material.dart';
 import 'package:adnetwork/main.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:adnetwork/layers/presentation/screen/home/home_page.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:adnetwork/core/services/token_storage.dart';
-import 'package:adnetwork/core/services/autoplay_manager.dart';
 import 'package:flutter/services.dart';
 import 'package:adnetwork/core/services/api_client.dart';
 import 'package:adnetwork/layers/dto/api_response.dart';
@@ -29,7 +29,8 @@ final ValueNotifier<bool> isPipModeNotifier = ValueNotifier(false);
 final ValueNotifier<double> webViewOverlayOpacityNotifier = ValueNotifier(0.0);
 
 class FeedScreen extends StatefulWidget {
-  const FeedScreen({super.key});
+  final bool isActive;
+  const FeedScreen({super.key, this.isActive = false});
 
   @override
   State<FeedScreen> createState() => _FeedScreenState();
@@ -57,7 +58,9 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
     WakelockPlus.enable();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        _checkAutoStartAutoPlay();
+        if (widget.isActive) {
+          _checkAutoplayPersistentStatus();
+        }
       }
     });
   }
@@ -75,19 +78,6 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
       context.read<NoticeBloc>().add(const LoadNotices());
       context.read<ProfileBloc>().add(const LoadProfileStats());
       context.read<ExploreBloc>().add(const RefreshExplore());
-      _checkAutoStartAutoPlay();
-    }
-  }
-
-  void _checkAutoStartAutoPlay() {
-    if (AutoPlayManager.shouldAutoStartFeedAutoPlay) {
-      AutoPlayManager.shouldAutoStartFeedAutoPlay = false;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && !_isAutoScrolling) {
-          final state = context.read<FeedBloc>().state;
-          _toggleAutoPlay(state);
-        }
-      });
     }
   }
 
@@ -165,6 +155,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
   void _toggleAutoPlay(FeedState state) {
     setState(() {
       _isAutoScrolling = !_isAutoScrolling;
+      TokenStorage.instance.saveFeedAutoplay(_isAutoScrolling ? 1 : 0);
       _isProcessingTarget = false;
       if (_isAutoScrolling) {
         _currentTargetIndex = 0;
@@ -183,6 +174,42 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
         _botTimer = null;
       }
     });
+  }
+
+  void _stopAutoplayTemporarily() {
+    if (_isAutoScrolling) {
+      setState(() {
+        _isAutoScrolling = false;
+        _isProcessingTarget = false;
+        _botTimer?.cancel();
+        _botTimer = null;
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(FeedScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isActive && !oldWidget.isActive) {
+      _checkAutoplayPersistentStatus();
+    } else if (!widget.isActive && oldWidget.isActive) {
+      _stopAutoplayTemporarily();
+    }
+  }
+
+  Future<void> _checkAutoplayPersistentStatus() async {
+    final autoplayVal = await TokenStorage.instance.getFeedAutoplay();
+    if (autoplayVal == 1) {
+      if (mounted && !_isAutoScrolling) {
+        final feedBloc = context.read<FeedBloc>();
+        _toggleAutoPlay(feedBloc.state);
+      }
+    } else {
+      if (mounted && _isAutoScrolling) {
+        final feedBloc = context.read<FeedBloc>();
+        _toggleAutoPlay(feedBloc.state);
+      }
+    }
   }
 
   void _startBotTimer() {
@@ -622,8 +649,14 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
                             ),
                             const SizedBox(height: 12),
                             InkWell(
-                              onTap: () =>
-                                  Navigator.pushNamed(context, '/campaign'),
+                              onTap: () {
+                                final homeState = context.findAncestorStateOfType<HomePageState>();
+                                if (homeState != null) {
+                                  homeState.setIndex(2);
+                                } else {
+                                  Navigator.pushNamed(context, '/campaign');
+                                }
+                              },
                               borderRadius: BorderRadius.circular(16),
                               child: Container(
                                 padding: const EdgeInsets.symmetric(
@@ -1589,7 +1622,12 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
                 ),
               ),
               onPressed: () {
-                Navigator.pushNamed(context, '/campaign');
+                final homeState = context.findAncestorStateOfType<HomePageState>();
+                if (homeState != null) {
+                  homeState.setIndex(2);
+                } else {
+                  Navigator.pushNamed(context, '/campaign');
+                }
               },
               child: Row(
                 mainAxisSize: MainAxisSize.min,

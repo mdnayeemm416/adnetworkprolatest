@@ -52,7 +52,13 @@ class AppRoutes {
       case Routes.signup:
         return MaterialPageRoute(builder: (_) => const SignupScreen());
       case Routes.home:
-        return MaterialPageRoute(builder: (_) => const HomePage());
+        final args = settings.arguments as Map<String, dynamic>?;
+        final initialIndex = args?['initialIndex'] as int?;
+        return MaterialPageRoute(
+          builder: (_) => HomePage(
+            initialIndex: initialIndex,
+          ),
+        );
       case Routes.userProfile:
         final userId = settings.arguments as String;
         return MaterialPageRoute(

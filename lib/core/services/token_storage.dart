@@ -104,6 +104,33 @@ class TokenStorage {
     return prefs.getBool(_autoLikeEnabledKey) ?? false;
   }
 
+  static const String _feedAutoplayKey = 'feed_autoplay_key';
+  static const String _campaignAutoplayKey = 'campaign_autoplay_key';
+
+  /// Save feed autoplay status (1 for on, 0 for off)
+  Future<void> saveFeedAutoplay(int value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_feedAutoplayKey, value);
+  }
+
+  /// Retrieve feed autoplay status
+  Future<int> getFeedAutoplay() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_feedAutoplayKey) ?? 0;
+  }
+
+  /// Save campaign autoplay status (1 for on, 0 for off)
+  Future<void> saveCampaignAutoplay(int value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_campaignAutoplayKey, value);
+  }
+
+  /// Retrieve campaign autoplay status
+  Future<int> getCampaignAutoplay() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_campaignAutoplayKey) ?? 0;
+  }
+
   /// Retrieves the existing device ID or generates a new persistent one if not present.
   Future<String> getOrGenerateDeviceId() async {
     final prefs = await SharedPreferences.getInstance();

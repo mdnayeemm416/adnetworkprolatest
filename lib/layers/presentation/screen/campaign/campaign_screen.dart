@@ -6,7 +6,6 @@ import 'package:adnetwork/core/extensions/extension.dart';
 import 'package:adnetwork/core/services/mobile_config_manager.dart';
 import 'package:adnetwork/core/services/api_client.dart';
 import 'package:adnetwork/core/services/token_storage.dart';
-import 'package:adnetwork/core/services/autoplay_manager.dart';
 import 'package:adnetwork/layers/dto/api_response.dart';
 import 'package:adnetwork/layers/data/model/campaign_link_model.dart';
 import 'package:adnetwork/layers/presentation/controller/campaign/campaign_bloc.dart';
@@ -18,12 +17,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_custom_tabs/flutter_custom_tabs.dart' as custom_tabs;
+import 'package:adnetwork/layers/presentation/screen/home/home_page.dart';
 import 'package:intl/intl.dart';
 import 'package:toastification/toastification.dart';
 
 class CampaignScreen extends StatefulWidget {
   final bool isMandatory;
-  const CampaignScreen({super.key, this.isMandatory = false});
+  final bool isTab;
+  final bool isActive;
+  const CampaignScreen({
+    super.key,
+    this.isMandatory = false,
+    this.isTab = false,
+    this.isActive = false,
+  });
 
   @override
   State<CampaignScreen> createState() => _CampaignScreenState();
@@ -55,13 +62,23 @@ class _CampaignScreenState extends State<CampaignScreen>
     }
   }
 
-  void _navigateToFeedAfterCampaignComplete() {
+  void _navigateToFeedAfterCampaignComplete({bool wasAutoplay = false}) {
     if (!mounted) return;
     showToast(
       context: context,
       message: 'Campaign completed! Navigating to feed...',
       toastificationType: ToastificationType.success,
     );
+    if (wasAutoplay || _autoplayActive) {
+      TokenStorage.instance.saveFeedAutoplay(1);
+    }
+    if (widget.isTab) {
+      final homeState = context.findAncestorStateOfType<HomePageState>();
+      if (homeState != null) {
+        homeState.setIndex(0, bypassLock: true);
+        return;
+      }
+    }
     if (Navigator.canPop(context)) {
       Navigator.pop(context);
     } else {
@@ -77,10 +94,10 @@ class _CampaignScreenState extends State<CampaignScreen>
 
     setState(() {
       _autoplayActive = !_autoplayActive;
+      TokenStorage.instance.saveCampaignAutoplay(_autoplayActive ? 1 : 0);
     });
 
     if (_autoplayActive) {
-      AutoPlayManager.shouldAutoStartFeedAutoPlay = true;
       _locallyCompletedAdIds.clear();
       final state = context.read<CampaignBloc>().state;
       final unlikedLinks = state.feedLinks
@@ -92,8 +109,6 @@ class _CampaignScreenState extends State<CampaignScreen>
       } else {
         _navigateToFeedAfterCampaignComplete();
       }
-    } else {
-      AutoPlayManager.shouldAutoStartFeedAutoPlay = false;
     }
   }
 
@@ -112,7 +127,46 @@ class _CampaignScreenState extends State<CampaignScreen>
       campaignBloc.add(const LoadMyCampaigns());
       campaignBloc.add(const LoadCampaignCompletions());
       campaignBloc.add(const LoadCampaignStatus());
+      if (widget.isActive) {
+        _checkAutoplayPersistentStatus();
+      }
     });
+  }
+
+  @override
+  void didUpdateWidget(CampaignScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isActive && !oldWidget.isActive) {
+      _checkAutoplayPersistentStatus();
+    } else if (!widget.isActive && oldWidget.isActive) {
+      _stopAutoplayTemporarily();
+    }
+  }
+
+  void _stopAutoplayTemporarily() {
+    if (_autoplayActive) {
+      setState(() {
+        _autoplayActive = false;
+      });
+    }
+  }
+
+  Future<void> _checkAutoplayPersistentStatus() async {
+    final autoplayVal = await TokenStorage.instance.getCampaignAutoplay();
+    if (!mounted) return;
+    setState(() {
+      _autoplayActive = autoplayVal == 1;
+    });
+    // If it was turned on, start the autoplay sequence if not watching
+    if (_autoplayActive && !_isWatching) {
+      final state = context.read<CampaignBloc>().state;
+      final unlikedLinks = state.feedLinks
+          .where((l) => !l.isLiked && !_locallyCompletedAdIds.contains(l.id))
+          .toList();
+      if (unlikedLinks.isNotEmpty) {
+        _launchAd(unlikedLinks.first);
+      }
+    }
   }
 
   @override
@@ -147,6 +201,7 @@ class _CampaignScreenState extends State<CampaignScreen>
             _isWatching = false;
             _secondsRemaining = 0;
             _autoplayActive = false;
+            TokenStorage.instance.saveCampaignAutoplay(0);
           });
           _showEarlyCloseDialog();
         }
@@ -191,7 +246,7 @@ class _CampaignScreenState extends State<CampaignScreen>
         Uri.parse(campaign.url),
         customTabsOptions: custom_tabs.CustomTabsOptions(
           partial: custom_tabs.PartialCustomTabsConfiguration(
-            initialHeight: height * 0.9,
+            initialHeight: height * 0.86,
             activityHeightResizeBehavior:
                 custom_tabs.CustomTabsActivityHeightResizeBehavior.fixed,
             cornerRadius: 16,
@@ -224,7 +279,7 @@ class _CampaignScreenState extends State<CampaignScreen>
           Uri.parse(campaign.url),
           customTabsOptions: custom_tabs.CustomTabsOptions(
             partial: custom_tabs.PartialCustomTabsConfiguration(
-              initialHeight: height * 0.9,
+              initialHeight: height * 0.86,
               activityHeightResizeBehavior:
                   custom_tabs.CustomTabsActivityHeightResizeBehavior.fixed,
               cornerRadius: 16,
@@ -445,10 +500,10 @@ class _CampaignScreenState extends State<CampaignScreen>
       final wasAutoplay = _autoplayActive;
       setState(() {
         _autoplayActive = false;
+        TokenStorage.instance.saveCampaignAutoplay(0);
       });
       if (wasAutoplay && unlikedLinks.isEmpty) {
-        AutoPlayManager.shouldAutoStartFeedAutoPlay = true;
-        _navigateToFeedAfterCampaignComplete();
+        _navigateToFeedAfterCampaignComplete(wasAutoplay: true);
       }
     }
   }
@@ -657,7 +712,7 @@ class _CampaignScreenState extends State<CampaignScreen>
     }
 
     return PopScope(
-      canPop: widget.isMandatory ? false : canPop,
+      canPop: widget.isTab ? false : (widget.isMandatory ? false : canPop),
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
         if (widget.isMandatory) {
@@ -668,6 +723,32 @@ class _CampaignScreenState extends State<CampaignScreen>
           );
           return;
         }
+
+        if (widget.isTab) {
+          if (canPop) {
+            final homeState = context.findAncestorStateOfType<HomePageState>();
+            if (homeState != null && homeState.getCurrentIndex() != 0) {
+              homeState.setIndex(0);
+              return;
+            }
+            Navigator.of(context).pop(result);
+            return;
+          } else {
+            final shouldExit = await _showExitConfirmationDialog(
+              unlikedLinks.length,
+            );
+            if (shouldExit && context.mounted) {
+              final homeState = context.findAncestorStateOfType<HomePageState>();
+              if (homeState != null) {
+                homeState.setIndex(0);
+              } else {
+                Navigator.of(context).pop(result);
+              }
+            }
+          }
+          return;
+        }
+
         final shouldExit = await _showExitConfirmationDialog(
           unlikedLinks.length,
         );
@@ -694,7 +775,6 @@ class _CampaignScreenState extends State<CampaignScreen>
 
             final unlikedLinks = state.feedLinks.where((l) => !l.isLiked).toList();
             if (state.feedStatus == CampaignStatus.loaded && unlikedLinks.isEmpty) {
-              AutoPlayManager.shouldAutoStartFeedAutoPlay = true;
               _navigateToFeedAfterCampaignComplete();
               return;
             }
@@ -716,11 +796,10 @@ class _CampaignScreenState extends State<CampaignScreen>
           }
 
           // When feed loads and all campaigns are already done or no campaigns exist,
-          // navigate to feed and auto-start auto-play.
+          // navigate to feed.
           if (state.feedStatus == CampaignStatus.loaded) {
             final unlikedLinks = state.feedLinks.where((l) => !l.isLiked).toList();
             if (unlikedLinks.isEmpty || state.feedLinks.isEmpty) {
-              AutoPlayManager.shouldAutoStartFeedAutoPlay = true;
               _navigateToFeedAfterCampaignComplete();
             }
           }
@@ -730,24 +809,29 @@ class _CampaignScreenState extends State<CampaignScreen>
           appBar: AppBar(
             backgroundColor: cs.surface,
             elevation: 0,
-            automaticallyImplyLeading: !widget.isMandatory,
-            leading: widget.isMandatory
-                ? null
-                : IconButton(
-                    icon: Icon(Icons.arrow_back_rounded, color: cs.onSurface),
-                    onPressed: () async {
-                      if (canPop) {
-                        Navigator.pop(context);
-                      } else {
-                        final shouldExit = await _showExitConfirmationDialog(
-                          unlikedLinks.length,
-                        );
-                        if (shouldExit && context.mounted) {
-                          Navigator.pop(context);
-                        }
-                      }
-                    },
-                  ),
+            automaticallyImplyLeading: false,
+            leading: widget.isTab
+                ? IconButton(
+                    icon: Icon(Icons.menu_rounded, color: cs.onSurface),
+                    onPressed: () => Scaffold.of(context).openDrawer(),
+                  )
+                : (widget.isMandatory
+                    ? null
+                    : IconButton(
+                        icon: Icon(Icons.arrow_back_rounded, color: cs.onSurface),
+                        onPressed: () async {
+                          if (canPop) {
+                            Navigator.pop(context);
+                          } else {
+                            final shouldExit = await _showExitConfirmationDialog(
+                              unlikedLinks.length,
+                            );
+                            if (shouldExit && context.mounted) {
+                              Navigator.pop(context);
+                            }
+                          }
+                        },
+                      )),
             title: Text(
               'Campaigns',
               style: getBoldStyle(fontSize: 20, color: cs.onSurface),
