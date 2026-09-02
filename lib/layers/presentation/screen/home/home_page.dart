@@ -20,6 +20,7 @@ import 'package:adnetwork/layers/presentation/screen/campaign/campaign_screen.da
 import 'package:adnetwork/layers/presentation/controller/campaign/campaign_bloc.dart';
 import 'package:adnetwork/layers/presentation/widget/link_queue_overlay.dart';
 import 'package:adnetwork/layers/presentation/widget/user_avatar.dart';
+import 'package:adnetwork/core/services/link_queue_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -654,39 +655,40 @@ class HomePageState extends State<HomePage> {
               ),
             ),
             body: SafeArea(
+              top: false,
+              bottom: false,
+              left: false,
+              right: false,
               child: ValueListenableBuilder<bool>(
                 valueListenable: isPipModeNotifier,
                 builder: (context, isPip, child) {
                   return Stack(
                     children: [
-                      Column(
-                        children: [
-                          // Main content
-                          Expanded(
-                            child: OverflowBox(
-                              minWidth: isPip ? 400 : null,
-                              maxWidth: isPip ? 400 : null,
-                              minHeight: isPip ? 800 : null,
-                              maxHeight: isPip ? 800 : null,
-                              alignment: Alignment.topCenter,
-                              child: IndexedStack(
-                                index: _idx,
-                                children: pages,
+                      // Offstage keeps the feed screen, BLoC subscriptions, and AutoPlay engine
+                      // alive in the background while in PIP mode.
+                      Offstage(
+                        offstage: isPip,
+                        child: SafeArea(
+                          child: Column(
+                            children: [
+                              // Main content
+                              Expanded(
+                                child: IndexedStack(
+                                  index: _idx,
+                                  children: pages,
+                                ),
                               ),
-                            ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
-                      Positioned(
-                        left: isPip ? 0 : 16,
-                        right: isPip ? 0 : null,
-                        top: isPip ? 0 : null,
-                        bottom: isPip ? 0 : 16,
-                        child: Container(
-                          color: isPip
-                              ? Theme.of(context).colorScheme.surface
-                              : Colors.transparent,
-                          child: LinkQueueOverlay(isPipMode: isPip),
+                      Positioned.fill(
+                        child: LinkQueueOverlay(
+                          key: const ValueKey('active_link_queue_overlay'),
+                          isPipMode: isPip,
+                          onPauseAutoPlay: () {
+                            LinkQueueManager.instance.requestPauseAutoPlay();
+                          },
                         ),
                       ),
                     ],

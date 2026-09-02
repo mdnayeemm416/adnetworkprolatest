@@ -1,324 +1,443 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:hive/hive.dart';
 import 'package:adnetwork/core/services/mobile_config_manager.dart';
+import 'package:adnetwork/core/services/api_client.dart';
+import 'package:adnetwork/config/api_endpoints.dart';
+import 'package:adnetwork/layers/data/model/link_model.dart';
 
-/// Represents a link currently being loaded in one of the 4 WebView slots.
-class ActiveLink {
+/// Represents an active link session being displayed in the full display WebView.
+class ActiveViewSession {
   final String url;
-  final String? linkId;
-  final DateTime displayedAt;
-  final int retryCount;
+  final String linkId;
+  final int durationSeconds;
+  final int pageIndex;
+  final int linkIndex;
+  final int totalLinks;
+  final bool isAutoPlay;
+  final DateTime startedAt;
 
-  ActiveLink({
+  ActiveViewSession({
     required this.url,
-    this.linkId,
-    required this.displayedAt,
-    this.retryCount = 0,
-  });
+    required this.linkId,
+    required this.durationSeconds,
+    this.pageIndex = 1,
+    this.linkIndex = 1,
+    this.totalLinks = 1,
+    this.isAutoPlay = false,
+    DateTime? startedAt,
+  }) : startedAt = startedAt ?? DateTime.now();
 
-  Map<String, dynamic> toJson() => {
-    'url': url,
-    'linkId': linkId,
-    'displayedAt': displayedAt.toIso8601String(),
-    'retryCount': retryCount,
-  };
-
-  factory ActiveLink.fromJson(Map<String, dynamic> json) => ActiveLink(
-    url: json['url'] as String,
-    linkId: json['linkId'] as String?,
-    displayedAt: DateTime.parse(json['displayedAt'] as String),
-    retryCount: (json['retryCount'] as int?) ?? 0,
-  );
-
-  int get remainingSeconds {
-    final elapsed = DateTime.now().difference(displayedAt).inSeconds;
-    return (20 - elapsed).clamp(0, 20);
-  }
-
+  int get elapsedSeconds => DateTime.now().difference(startedAt).inSeconds;
+  int get remainingSeconds => (durationSeconds - elapsedSeconds).clamp(0, durationSeconds);
   bool get isExpired => remainingSeconds <= 0;
 }
 
-/// Manages a queue of URLs with 4 simultaneously active WebView slots.
-///
-/// Architecture:
-/// - 4 separate WebView instances load URLs directly as top-level pages
-///   (not iframes), avoiding X-Frame-Options / CSP restrictions.
-/// - After each page loads, it stays for 5–10 seconds (random),
-///   then the slot moves to the next URL in the queue.
-/// - If a page fails to load, it is dropped immediately without retries.
-/// - All state is persisted to SharedPreferences.
-/// - When a slot finishes viewing, the associated linkId is emitted on
-///   [completedLinkStream] so the like API can be called at that point.
+/// A queued link entry stored in Hive for persistent autoplay.
+class QueuedLink {
+  final String linkId;
+  final String url;
+
+  QueuedLink({required this.linkId, required this.url});
+
+  Map<String, dynamic> toMap() => {'linkId': linkId, 'url': url};
+
+  factory QueuedLink.fromMap(Map<dynamic, dynamic> map) {
+    return QueuedLink(
+      linkId: map['linkId']?.toString() ?? '',
+      url: map['url']?.toString() ?? '',
+    );
+  }
+}
+
+/// Manages active full-display WebView viewing sessions for single likes and autoplay.
+/// Uses a Hive box (`link_queue`) for persistent queue storage so that:
+/// - When the feed API loads, all unliked links are saved to Hive.
+/// - Manual likes remove the entry from Hive after the viewing timer completes.
+/// - AutoPlay pulls URLs from Hive sequentially; when the timer ends, the entry
+///   is deleted and the next URL is loaded. When all entries are consumed,
+///   the link API is called again to fetch fresh links and continue autoplay.
+/// - If the user closes the WebView, autoplay stops but remaining Hive entries
+///   are preserved for resumption.
 class LinkQueueManager {
   static final LinkQueueManager instance = LinkQueueManager._();
   LinkQueueManager._();
 
-  static const _pendingKey = 'link_queue_pending';
-  static const _activeKey = 'link_queue_active';
-  static const int maxSlots = 3;
-  static const int maxRetries = 0;
-
-  late SharedPreferences _prefs;
   final _random = Random();
-  Timer? _sweeperTimer;
 
-  /// Pending URLs with retry counts.
-  final List<_PendingUrl> _pending = [];
+  static const String _boxName = 'link_queue';
+  Box? _box;
 
-  /// Active links indexed by slot (0..3). Null means the slot is empty.
-  final List<ActiveLink?> _slots = List.filled(maxSlots, null);
+  /// Flag to prevent concurrent API fetch calls.
+  bool _isFetchingLinks = false;
 
-  final _controller = StreamController<List<ActiveLink?>>.broadcast();
+  /// Notifier for the currently active full-display WebView session.
+  final ValueNotifier<ActiveViewSession?> activeSessionNotifier = ValueNotifier(null);
 
   /// Stream that emits a linkId whenever a link has been fully viewed
   /// in the WebView and should now have its like API called.
   final _completedLinkController = StreamController<String>.broadcast();
-
-  /// Stream of slot states — a list of exactly 4 entries (nullable).
-  Stream<List<ActiveLink?>> get slotsStream => _controller.stream;
-
-  /// Stream of completed linkIds — subscribe to this to fire the like API.
   Stream<String> get completedLinkStream => _completedLinkController.stream;
 
-  /// Current snapshot of all 4 slots.
-  List<ActiveLink?> get slots => List.unmodifiable(_slots);
+  /// Stream of session changes for reactive UI updates.
+  final _sessionController = StreamController<ActiveViewSession?>.broadcast();
+  Stream<ActiveViewSession?> get sessionStream => _sessionController.stream;
 
-  /// Number of pending links waiting in queue.
-  int get pendingCount => _pending.length;
+  /// Stream that notifies FeedScreen when AutoPlay should be paused.
+  final _autoPlayPauseController = StreamController<void>.broadcast();
+  Stream<void> get autoPlayPauseStream => _autoPlayPauseController.stream;
 
-  /// Whether there are any links to process.
-  bool get hasWork => _slots.any((s) => s != null) || _pending.isNotEmpty;
+  /// Stream that notifies when all queued links have been consumed during autoplay
+  /// AND the API returned no new links.
+  final _allLinksCompletedController = StreamController<void>.broadcast();
+  Stream<void> get allLinksCompletedStream => _allLinksCompletedController.stream;
+
+  /// Stream that notifies FeedBloc to refresh its state with fresh links
+  /// fetched during autoplay/PIP mode.
+  final _feedRefreshController = StreamController<List<LinkModel>>.broadcast();
+  Stream<List<LinkModel>> get feedRefreshStream => _feedRefreshController.stream;
+
+  ActiveViewSession? get currentSession => activeSessionNotifier.value;
+  bool get isViewing => activeSessionNotifier.value != null;
 
   /// Generate a random delay for page viewing based on the mobile config.
-  Duration get randomViewDuration {
+  int get randomViewDurationSeconds {
     final minS = int.tryParse(MobileConfigManager.instance.config.minAdsTime) ?? 10;
     final maxS = int.tryParse(MobileConfigManager.instance.config.maxAdsTime) ?? 15;
-    if (maxS <= minS) {
-      return Duration(seconds: minS);
-    }
+    if (maxS <= minS) return minS;
     final range = maxS - minS + 1;
-    return Duration(seconds: minS + _random.nextInt(range));
+    return minS + _random.nextInt(range);
   }
 
-  /// Initialize from SharedPreferences cache on app start.
+  // ─────────────────── Hive Queue API ───────────────────
+
+  /// Initialize queue manager on app start. Opens the Hive box.
   Future<void> init() async {
-    _prefs = await SharedPreferences.getInstance();
-    _loadFromCache();
-    _promoteToSlots();
-    _persist();
-    _emit();
-
-    // Periodic sweeper: every 15s, force-expire any slot older than 45s.
-    // Belt-and-suspenders safeguard in case the WebView overlay fails to
-    // call onSlotFinished/onSlotError.
-    _sweeperTimer?.cancel();
-    _sweeperTimer = Timer.periodic(const Duration(seconds: 15), (_) {
-      _sweepStuckSlots();
-    });
+    _box = await Hive.openBox(_boxName);
+    activeSessionNotifier.value = null;
+    debugPrint('[LinkQueue] ✅ Hive box "$_boxName" opened with ${_box!.length} queued items');
   }
 
-  /// Force-expire any slot whose link has been active for more than 45 seconds.
-  void _sweepStuckSlots() {
-    final now = DateTime.now();
-    bool changed = false;
-    for (int i = 0; i < maxSlots; i++) {
-      final link = _slots[i];
-      if (link != null) {
-        final elapsed = now.difference(link.displayedAt).inSeconds;
-        if (elapsed > 45) {
-          debugPrint(
-            '[LinkQueue] \u{1F9F9} Sweeper: slot $i stuck for ${elapsed}s, force-expiring: ${link.url}',
-          );
-          // Emit completed so the like API is still called
-          if (link.linkId != null && link.linkId!.isNotEmpty) {
-            _completedLinkController.add(link.linkId!);
-          }
-          _slots[i] = null;
-          changed = true;
-        }
+  /// Populate the Hive queue with links from the API.
+  /// Clears any existing queue and adds only unliked links.
+  Future<void> populateQueue(List<dynamic> links) async {
+    if (_box == null) return;
+    await _box!.clear();
+
+    int addedCount = 0;
+    for (final link in links) {
+      final String? id = link.id?.toString();
+      final String? url = link.url?.toString();
+      final bool isLiked = link.isLiked ?? false;
+
+      if (id != null && id.isNotEmpty && url != null && url.isNotEmpty && !isLiked) {
+        await _box!.add({'linkId': id, 'url': url});
+        addedCount++;
       }
     }
-    if (changed) {
-      _promoteToSlots();
-      _persist();
-      _emit();
+
+    debugPrint('[LinkQueue] 📦 Queue populated with $addedCount unliked links (cleared ${links.length - addedCount} liked/invalid)');
+  }
+
+  /// Returns the number of remaining links in the Hive queue.
+  int get queueLength => _box?.length ?? 0;
+
+  /// Whether there are any links remaining in the Hive queue.
+  bool get hasQueuedLinks => queueLength > 0;
+
+  /// Peek at the next queued link without removing it.
+  QueuedLink? peekNext() {
+    if (_box == null || _box!.isEmpty) return null;
+    final raw = _box!.getAt(0);
+    if (raw is Map) {
+      return QueuedLink.fromMap(raw);
+    }
+    return null;
+  }
+
+  /// Remove and return the first queued link from Hive.
+  QueuedLink? dequeueNext() {
+    if (_box == null || _box!.isEmpty) return null;
+    final raw = _box!.getAt(0);
+    _box!.deleteAt(0);
+    if (raw is Map) {
+      final link = QueuedLink.fromMap(raw);
+      debugPrint('[LinkQueue] 📤 Dequeued: ${link.linkId} ($queueLength remaining)');
+      return link;
+    }
+    return null;
+  }
+
+  /// Remove a specific link from the queue by linkId (e.g., after manual like).
+  Future<void> removeFromQueue(String linkId) async {
+    if (_box == null) return;
+    final keys = <dynamic>[];
+    for (int i = 0; i < _box!.length; i++) {
+      final raw = _box!.getAt(i);
+      if (raw is Map && raw['linkId']?.toString() == linkId) {
+        keys.add(_box!.keyAt(i));
+      }
+    }
+    for (final key in keys) {
+      await _box!.delete(key);
+    }
+    if (keys.isNotEmpty) {
+      debugPrint('[LinkQueue] 🗑️ Removed linkId=$linkId from queue ($queueLength remaining)');
     }
   }
 
-  /// Add a URL to the pending queue.
-  /// [linkId] is the ID of the link, used to call the like API after viewing.
-  void enqueue(String url, {String? linkId}) {
+  // ─────────────────── Auto-Fetch API ───────────────────
+
+  /// Fetch fresh links from the API, populate Hive, and continue autoplay.
+  /// Called when the Hive queue is empty during autoplay (especially PIP mode).
+  /// The WebView stays open while fetching — no close/reopen flicker.
+  Future<void> _fetchAndContinueAutoPlay(int pageIndex) async {
+    if (_isFetchingLinks) return;
+    _isFetchingLinks = true;
+
+    debugPrint('[LinkQueue] 🔄 Hive queue empty — fetching fresh links from API...');
+
+    try {
+      final response = await ApiClient.instance.get<LinkModel>(
+        ApiEndpoints.links,
+        fromJsonModel: (json) => LinkModel.fromJson(json as Map<String, dynamic>),
+      );
+
+      if (response.isSuccess) {
+        final links = response.dataList ??
+            (response.data != null ? [response.data!] : <LinkModel>[]);
+
+        // Notify FeedBloc to update its state with fresh links
+        if (links.isNotEmpty) {
+          _feedRefreshController.add(links);
+        }
+
+        // Clear and populate Hive with fresh unliked links
+        await populateQueue(links);
+
+        // Now continue autoplay with the new queue
+        if (hasQueuedLinks) {
+          final next = peekNext();
+          if (next != null) {
+            final duration = randomViewDurationSeconds;
+            final newSession = ActiveViewSession(
+              url: next.url,
+              linkId: next.linkId,
+              durationSeconds: duration,
+              pageIndex: pageIndex + 1,
+              linkIndex: 1,
+              totalLinks: queueLength,
+              isAutoPlay: true,
+            );
+            debugPrint('[LinkQueue] ▶ Continuing autoplay with fresh links: ${next.url} (${duration}s) [$queueLength total]');
+            activeSessionNotifier.value = newSession;
+            _sessionController.add(newSession);
+            _isFetchingLinks = false;
+            return;
+          }
+        }
+
+        // API returned no unliked links — truly done
+        debugPrint('[LinkQueue] ⚠️ API returned no new unliked links. Closing WebView.');
+      } else {
+        debugPrint('[LinkQueue] ❌ API fetch failed: ${response.message}');
+      }
+    } catch (e) {
+      debugPrint('[LinkQueue] ❌ API fetch error: $e');
+    }
+
+    _isFetchingLinks = false;
+
+    // Failed to get new links — close WebView and signal completion
+    activeSessionNotifier.value = null;
+    _sessionController.add(null);
+    _allLinksCompletedController.add(null);
+  }
+
+  // ─────────────────── Session Management ───────────────────
+
+  /// Start viewing a link in the full-display WebView.
+  void startViewing({
+    required String url,
+    required String linkId,
+    int pageIndex = 1,
+    int linkIndex = 1,
+    int totalLinks = 1,
+    bool isAutoPlay = false,
+    int? customDurationSeconds,
+  }) {
     if (url.isEmpty || !url.startsWith('http')) {
       debugPrint('[LinkQueue] ⚠️ Skipping invalid URL: $url');
-      return;
-    }
-    _pending.add(_PendingUrl(url: url, linkId: linkId, retryCount: 0));
-    _promoteToSlots();
-    _persist();
-    _emit();
-  }
-
-  /// Called when a slot's page has fully loaded and its display time elapsed.
-  void onSlotFinished(int slotIndex) {
-    if (slotIndex < 0 || slotIndex >= maxSlots) return;
-    final link = _slots[slotIndex];
-    debugPrint('[LinkQueue] ✅ Slot $slotIndex done: ${link?.url}');
-
-    // Emit the linkId so the like API can be called
-    if (link?.linkId != null && link!.linkId!.isNotEmpty) {
-      _completedLinkController.add(link.linkId!);
-    }
-
-    _slots[slotIndex] = null;
-    _promoteToSlots();
-    _persist();
-    _emit();
-  }
-
-  /// Called when a slot's page failed to load.
-  /// Re-enqueues with retry tracking, up to maxRetries.
-  void onSlotError(int slotIndex) {
-    if (slotIndex < 0 || slotIndex >= maxSlots) return;
-    final link = _slots[slotIndex];
-    if (link == null) return;
-
-    final retries = link.retryCount;
-    final url = link.url;
-    final linkId = link.linkId;
-    _slots[slotIndex] = null;
-
-    if (retries < maxRetries) {
-      debugPrint(
-        '[LinkQueue] ❌ Slot $slotIndex failed (retry ${retries + 1}/$maxRetries): $url',
-      );
-      _pending.insert(
-        0,
-        _PendingUrl(url: url, linkId: linkId, retryCount: retries + 1),
-      );
-    } else {
-      debugPrint(
-        '[LinkQueue] 🚫 Slot $slotIndex exhausted retries, dropping: $url',
-      );
-      // Even if viewing failed, still call the like API since user already liked
-      if (linkId != null && linkId.isNotEmpty) {
+      if (linkId.isNotEmpty) {
+        removeFromQueue(linkId);
         _completedLinkController.add(linkId);
       }
+      return;
     }
 
-    _promoteToSlots();
-    _persist();
-    _emit();
+    final duration = customDurationSeconds ?? randomViewDurationSeconds;
+    final session = ActiveViewSession(
+      url: url,
+      linkId: linkId,
+      durationSeconds: duration,
+      pageIndex: pageIndex,
+      linkIndex: linkIndex,
+      totalLinks: totalLinks,
+      isAutoPlay: isAutoPlay,
+    );
+
+    activeSessionNotifier.value = session;
+    _sessionController.add(session);
+    debugPrint('[LinkQueue] ▶ Started full viewing: $url (${duration}s) [Link $linkIndex/$totalLinks]');
   }
 
-  // ── Internal logic ──
+  /// Legacy enqueue compatibility — opens the link in full display.
+  void enqueue(String url, {String? linkId}) {
+    if (url.isNotEmpty && linkId != null) {
+      startViewing(url: url, linkId: linkId);
+    }
+  }
 
-  /// Fill empty slots with pending URLs.
-  void _promoteToSlots() {
-    for (int i = 0; i < maxSlots; i++) {
-      if (_slots[i] == null && _pending.isNotEmpty) {
-        final next = _pending.removeAt(0);
-        _slots[i] = ActiveLink(
+  /// Called when the active session completes viewing successfully.
+  /// Removes the link from Hive, calls the completed stream (triggers like API),
+  /// and in autoplay mode, directly swaps to the next queued link (no close/reopen).
+  /// If the queue is empty, fetches fresh links from the API and continues.
+  void onSessionFinished() {
+    final session = activeSessionNotifier.value;
+    if (session == null) return;
+
+    debugPrint('[LinkQueue] ✅ Session finished: ${session.url} (${session.linkId})');
+    final linkId = session.linkId;
+    final wasAutoPlay = session.isAutoPlay;
+    final pageIndex = session.pageIndex;
+
+    // Remove from Hive queue
+    removeFromQueue(linkId);
+
+    // Trigger the like API
+    if (linkId.isNotEmpty) {
+      _completedLinkController.add(linkId);
+    }
+
+    // In autoplay mode, directly swap to next queued link (WebView stays open)
+    if (wasAutoPlay && hasQueuedLinks) {
+      final next = peekNext();
+      if (next != null) {
+        final duration = randomViewDurationSeconds;
+        final newSession = ActiveViewSession(
           url: next.url,
           linkId: next.linkId,
-          displayedAt: DateTime.now(),
-          retryCount: next.retryCount,
+          durationSeconds: duration,
+          pageIndex: pageIndex,
+          linkIndex: 1,
+          totalLinks: queueLength,
+          isAutoPlay: true,
         );
-        debugPrint('[LinkQueue] ▶ Slot $i loading: ${_slots[i]!.url}');
+        debugPrint('[LinkQueue] ▶ Swapping to next: ${next.url} (${duration}s) [$queueLength remaining]');
+        activeSessionNotifier.value = newSession;
+        _sessionController.add(newSession);
+        return;
       }
     }
-  }
 
-  void _emit() {
-    _controller.add(List.unmodifiable(_slots));
-  }
-
-  // ── Persistence ──
-
-  void _persist() {
-    final pendingJson = _pending
-        .map(
-          (p) => jsonEncode({
-            'url': p.url,
-            'linkId': p.linkId,
-            'retryCount': p.retryCount,
-          }),
-        )
-        .toList();
-    _prefs.setStringList(_pendingKey, pendingJson);
-
-    final activeJson = <String>[];
-    for (int i = 0; i < maxSlots; i++) {
-      if (_slots[i] != null) {
-        activeJson.add(jsonEncode({'slot': i, ..._slots[i]!.toJson()}));
-      }
+    // Queue empty during autoplay — fetch fresh links from API and continue
+    if (wasAutoPlay) {
+      _fetchAndContinueAutoPlay(pageIndex);
+      return;
     }
-    _prefs.setStringList(_activeKey, activeJson);
+
+    // Not autoplay — close WebView
+    activeSessionNotifier.value = null;
+    _sessionController.add(null);
   }
 
-  void _loadFromCache() {
-    _pending.clear();
-    final pendingRaw = _prefs.getStringList(_pendingKey) ?? [];
-    for (final raw in pendingRaw) {
-      try {
-        final json = jsonDecode(raw) as Map<String, dynamic>;
-        _pending.add(
-          _PendingUrl(
-            url: json['url'] as String,
-            linkId: json['linkId'] as String?,
-            retryCount: (json['retryCount'] as int?) ?? 0,
-          ),
+  /// Called when the session encountered an error or timed out.
+  /// Same direct-swap behavior as onSessionFinished for seamless autoplay.
+  void onSessionError() {
+    final session = activeSessionNotifier.value;
+    if (session == null) return;
+
+    debugPrint('[LinkQueue] ❌ Session error/timeout: ${session.url}');
+    final linkId = session.linkId;
+    final wasAutoPlay = session.isAutoPlay;
+    final pageIndex = session.pageIndex;
+
+    // Remove from Hive queue and complete the link so user doesn't get stuck
+    removeFromQueue(linkId);
+
+    if (linkId.isNotEmpty) {
+      _completedLinkController.add(linkId);
+    }
+
+    // In autoplay mode, directly swap to next queued link (WebView stays open)
+    if (wasAutoPlay && hasQueuedLinks) {
+      final next = peekNext();
+      if (next != null) {
+        final duration = randomViewDurationSeconds;
+        final newSession = ActiveViewSession(
+          url: next.url,
+          linkId: next.linkId,
+          durationSeconds: duration,
+          pageIndex: pageIndex,
+          linkIndex: 1,
+          totalLinks: queueLength,
+          isAutoPlay: true,
         );
-      } catch (_) {
-        _pending.add(_PendingUrl(url: raw, retryCount: 0));
+        debugPrint('[LinkQueue] ▶ Swapping to next (after error): ${next.url} (${duration}s)');
+        activeSessionNotifier.value = newSession;
+        _sessionController.add(newSession);
+        return;
       }
     }
 
-    for (int i = 0; i < maxSlots; i++) {
-      _slots[i] = null;
+    // Queue empty during autoplay — fetch fresh links from API and continue
+    if (wasAutoPlay) {
+      _fetchAndContinueAutoPlay(pageIndex);
+      return;
     }
-    final activeJson = _prefs.getStringList(_activeKey) ?? [];
-    for (final raw in activeJson) {
-      try {
-        final json = jsonDecode(raw) as Map<String, dynamic>;
-        final slot = json['slot'] as int;
-        if (slot >= 0 && slot < maxSlots) {
-          final link = ActiveLink.fromJson(json);
-          // If the link is older than 60s (stale from a previous app session),
-          // move it back to pending for a fresh retry instead of leaving it
-          // stuck in a slot with no WebView attached.
-          if (link.isExpired ||
-              DateTime.now().difference(link.displayedAt).inSeconds > 60) {
-            debugPrint(
-              '[LinkQueue] \u267b\ufe0f Stale active link in slot $slot moved to pending: ${link.url}',
-            );
-            _pending.add(
-              _PendingUrl(
-                url: link.url,
-                linkId: link.linkId,
-                retryCount: link.retryCount,
-              ),
-            );
-          } else {
-            _slots[slot] = link;
-          }
-        }
-      } catch (_) {}
+
+    // Not autoplay — close WebView
+    activeSessionNotifier.value = null;
+    _sessionController.add(null);
+  }
+
+  void requestPauseAutoPlay() {
+    _autoPlayPauseController.add(null);
+  }
+
+  /// Dismisses/cancels the current viewing session without calling like API (e.g. user closed manually).
+  /// The link is NOT removed from Hive so it can be resumed later.
+  void cancelViewing({bool completeLike = false}) {
+    final session = activeSessionNotifier.value;
+    if (session == null) return;
+
+    debugPrint('[LinkQueue] 🚫 Session cancelled: ${session.url}');
+    final linkId = session.linkId;
+    final wasAutoPlay = session.isAutoPlay;
+
+    activeSessionNotifier.value = null;
+    _sessionController.add(null);
+
+    if (wasAutoPlay) {
+      requestPauseAutoPlay();
     }
+
+    if (completeLike && linkId.isNotEmpty) {
+      removeFromQueue(linkId);
+      _completedLinkController.add(linkId);
+    }
+    // Note: When cancelled without completeLike, the link stays in Hive
+    // so autoplay can resume from it later.
   }
 
   void dispose() {
-    _controller.close();
     _completedLinkController.close();
-    _sweeperTimer?.cancel();
+    _sessionController.close();
+    _autoPlayPauseController.close();
+    _allLinksCompletedController.close();
+    _feedRefreshController.close();
+    activeSessionNotifier.dispose();
+    _box?.close();
   }
-}
-
-class _PendingUrl {
-  final String url;
-  final String? linkId;
-  final int retryCount;
-  _PendingUrl({required this.url, this.linkId, required this.retryCount});
 }
