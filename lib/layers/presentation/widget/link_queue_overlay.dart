@@ -1,209 +1,364 @@
 import 'dart:async';
-import 'dart:ui' show ImageFilter;
-import 'package:flutter/material.dart';
-import 'package:pip/pip.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:webview_flutter/webview_flutter.dart';
+
 import 'package:adnetwork/core/services/link_queue_manager.dart';
-import 'package:adnetwork/config/theme/styles_manager.dart';
+import 'package:adnetwork/layers/presentation/screen/feed/feed_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
-/// Global notifier for the real-time blur intensity (sigma from 0.0 to 30.0).
-final ValueNotifier<double> webViewBlurIntensityNotifier = ValueNotifier(12.0);
-
-/// Full-Display WebView Overlay that appears when a user likes a link or during AutoPlay.
-/// Displays the loaded web page with a real-time countdown timer bar at the top,
-/// live blur overlay, and a bottom customization panel for the user to adjust blur in real-time.
+/// WebView instances loading URLs directly as top-level pages.
 class LinkQueueOverlay extends StatelessWidget {
   final bool isPipMode;
-  final VoidCallback? onPauseAutoPlay;
 
-  const LinkQueueOverlay({
-    super.key,
-    this.isPipMode = false,
-    this.onPauseAutoPlay,
-  });
+  const LinkQueueOverlay({super.key, this.isPipMode = false});
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<ActiveViewSession?>(
-      valueListenable: LinkQueueManager.instance.activeSessionNotifier,
-      builder: (context, session, _) {
-        if (session == null) {
-          if (isPipMode) {
-            return Container(
-              color: const Color(0xFF0F172A),
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.2,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.blueAccent),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Loading next ad...',
-                      style: getMediumStyle(
-                        fontSize: 11,
-                        color: Colors.white70,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
-          return const SizedBox.shrink();
-        }
+    return StreamBuilder<List<ActiveLink?>>(
+      stream: LinkQueueManager.instance.slotsStream,
+      initialData: LinkQueueManager.instance.slots,
+      builder: (context, snapshot) {
+        final slots = snapshot.data ?? [];
+        final activeCount = slots.where((s) => s != null).length;
 
-        return _FullDisplayWebView(
-          key: ValueKey('${session.linkId}_${session.url}'),
-          session: session,
-          isPipMode: isPipMode,
-          onPauseAutoPlay: onPauseAutoPlay,
+        // Keep the WebViews in the tree but offstage when there is no work
+        return Offstage(
+          offstage: activeCount == 0,
+          child: RepaintBoundary(
+            child: isPipMode
+                ? Column(
+                    children: [
+                      for (int i = 0; i < LinkQueueManager.maxSlots; i++)
+                        _SlotWrapper(
+                          slotIndex: i,
+                          isPipMode: true,
+                          activeLink: slots.length > i ? slots[i] : null,
+                        ),
+                    ],
+                  )
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (int i = 0; i < LinkQueueManager.maxSlots; i++)
+                        _SlotWrapper(
+                          slotIndex: i,
+                          isPipMode: false,
+                          activeLink: slots.length > i ? slots[i] : null,
+                        ),
+                    ],
+                  ),
+          ),
         );
       },
     );
   }
 }
 
-class _FullDisplayWebView extends StatefulWidget {
-  final ActiveViewSession session;
+class _SlotWrapper extends StatelessWidget {
+  final int slotIndex;
   final bool isPipMode;
-  final VoidCallback? onPauseAutoPlay;
+  final ActiveLink? activeLink;
 
-  const _FullDisplayWebView({
-    super.key,
-    required this.session,
+  const _SlotWrapper({
+    required this.slotIndex,
     required this.isPipMode,
-    this.onPauseAutoPlay,
+    required this.activeLink,
   });
 
   @override
-  State<_FullDisplayWebView> createState() => _FullDisplayWebViewState();
+  Widget build(BuildContext context) {
+    if (activeLink == null) {
+      return const SizedBox.shrink();
+    }
+
+    final String linkKeyStr =
+        'slot_${slotIndex}_${activeLink?.linkId ?? activeLink?.url}';
+
+    final Widget overlayWidget = ValueListenableBuilder<double>(
+      valueListenable: webViewOverlayOpacityNotifier,
+      builder: (context, opacity, child) {
+        if (opacity <= 0) return const SizedBox.shrink();
+        return Positioned.fill(
+          child: IgnorePointer(
+            child: Container(color: Colors.white.withValues(alpha: opacity)),
+          ),
+        );
+      },
+    );
+
+    if (isPipMode) {
+      return Expanded(
+        child: FittedBox(
+          fit: BoxFit.contain,
+          child: SizedBox(
+            width: MediaQuery.of(context).size.width,
+            height: MediaQuery.of(context).size.height - 120,
+            child: Stack(
+              children: [
+                _SlotWebView(
+                  key: ValueKey(linkKeyStr),
+                  slotIndex: slotIndex,
+                  activeLink: activeLink,
+                ),
+                overlayWidget,
+              ],
+            ),
+          ),
+        ),
+      );
+    } else {
+      return Container(
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        width: 75,
+        height: 142,
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+            width: 1.5,
+          ),
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.25),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(10.5),
+          child: Stack(
+            children: [
+              FittedBox(
+                fit: BoxFit.contain,
+                child: SizedBox(
+                  width: MediaQuery.of(context).size.width,
+                  height: MediaQuery.of(context).size.height - 120,
+                  child: Stack(
+                    children: [
+                      _SlotWebView(
+                        key: ValueKey(linkKeyStr),
+                        slotIndex: slotIndex,
+                        activeLink: activeLink,
+                      ),
+                      overlayWidget,
+                    ],
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 4,
+                left: 4,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.65),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    'Slot ${slotIndex + 1}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 8,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+  }
 }
 
-class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
-  late final WebViewController _controller;
-  Timer? _countdownTicker;
-  Timer? _loadTimeoutTimer;
-  Timer? _masterTimeoutTimer;
+class _SlotWebView extends StatefulWidget {
+  final int slotIndex;
+  final ActiveLink? activeLink;
 
-  int _remainingSeconds = 0;
-  bool _isLoading = true;
-  bool _isPageReady = false;
-  bool _isCompleted = false;
+  const _SlotWebView({
+    super.key,
+    required this.slotIndex,
+    required this.activeLink,
+  });
+
+  @override
+  State<_SlotWebView> createState() => _SlotWebViewState();
+}
+
+class _SlotWebViewState extends State<_SlotWebView> {
+  late final WebViewController _controller;
+  Timer? _viewTimer;
+  Timer? _timeoutTimer;
+  Timer? _masterTimeout; // Safety-net: guarantees slot is freed no matter what
+  bool _isLoading = false;
+  bool _finished = false;
+  String? _loadedUrl;
 
   @override
   void initState() {
     super.initState();
-    _remainingSeconds = widget.session.durationSeconds;
-    _loadSavedBlur();
 
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFF000000))
-      ..setUserAgent('Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageStarted: (url) {
+          onPageStarted: (String url) {
             if (mounted) {
               setState(() {
                 _isLoading = true;
               });
             }
+            // Cancel any pending view timer on new page loads/redirects
+            _viewTimer?.cancel();
           },
-          onPageFinished: (url) {
+          onPageFinished: (String url) {
             if (mounted) {
               setState(() {
                 _isLoading = false;
               });
             }
-            _handlePageLoaded(url);
+            _onPageFinished(url);
           },
-          onWebResourceError: (error) {
+          onWebResourceError: (WebResourceError error) {
             if (mounted) {
               setState(() {
                 _isLoading = false;
               });
             }
-            debugPrint('[FullWebView] ⚠️ Web resource notice (${error.errorCode}): ${error.description}');
-            // Do not terminate the session on transient SSL or connection drops during PIP transitions.
-            // Ensure the countdown keeps running so the user's ad viewing completes gracefully.
-            if (!_isPageReady && !_isCompleted) {
-              _startCountdown();
-            }
+            _onWebResourceError(error);
           },
-          onHttpError: (error) {
-            debugPrint('[FullWebView] ⚠️ HTTP error ${error.response?.statusCode} on ${error.request?.uri}');
+          onHttpError: (HttpResponseError error) {
+            // Ignore subresource HTTP errors (like 404/500 tracking scripts) to avoid closing prematurely.
+            debugPrint(
+              '[LinkQueue] Slot ${widget.slotIndex} Subresource HTTP Error: ${error.response?.statusCode} on ${error.request?.uri}',
+            );
           },
         ),
       );
 
-    _startLoad();
+    _checkAndLoad();
   }
 
   @override
-  void didUpdateWidget(covariant _FullDisplayWebView oldWidget) {
+  void didUpdateWidget(covariant _SlotWebView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.session.linkId != widget.session.linkId ||
-        oldWidget.session.url != widget.session.url) {
-      _remainingSeconds = widget.session.durationSeconds;
-      _startLoad();
+    if (widget.activeLink?.url != oldWidget.activeLink?.url ||
+        widget.activeLink?.retryCount != oldWidget.activeLink?.retryCount ||
+        widget.activeLink?.displayedAt != oldWidget.activeLink?.displayedAt) {
+      _checkAndLoad();
     }
   }
 
-  Future<void> _loadSavedBlur() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedBlur = prefs.getDouble('webview_blur_intensity') ?? 12.0;
-    webViewBlurIntensityNotifier.value = savedBlur;
-  }
-
-  void _startLoad() {
-    _isLoading = true;
-    _isPageReady = false;
-    _isCompleted = false;
-
-    _loadTimeoutTimer?.cancel();
-    _masterTimeoutTimer?.cancel();
-    _countdownTicker?.cancel();
-
-    // ── Hard Master Timeout (45s max) ──
-    _masterTimeoutTimer = Timer(const Duration(seconds: 45), () {
-      if (!_isCompleted && mounted) {
-        debugPrint('[FullWebView] 🛡️ Master timeout (45s) triggered');
-        _onSessionFinished();
+  void _checkAndLoad() {
+    final link = widget.activeLink;
+    if (link == null) {
+      // Slot became idle, load about:blank to release resources and stop audio/video
+      if (_loadedUrl != null && _loadedUrl != 'about:blank') {
+        _loadedUrl = 'about:blank';
+        _finished = true;
+        _isLoading = false;
+        _viewTimer?.cancel();
+        _timeoutTimer?.cancel();
+        _masterTimeout?.cancel();
+        try {
+          _controller.loadRequest(Uri.parse('about:blank'));
+        } catch (_) {}
       }
-    });
+      return;
+    }
 
-    // ── Page load timeout (20s) ──
-    _loadTimeoutTimer = Timer(const Duration(seconds: 20), () {
-      if (!_isPageReady && !_isCompleted && mounted) {
-        debugPrint('[FullWebView] ⏰ Load timed out after 20s — starting countdown anyway');
-        _startCountdown();
+    _loadedUrl = link.url;
+    _finished = false;
+    _isLoading = true;
+
+    _viewTimer?.cancel();
+    _timeoutTimer?.cancel();
+    _masterTimeout?.cancel();
+
+    // ── MASTER SAFETY-NET: 45s hard cap from the moment we start loading ──
+    // This runs immediately so it covers ALL phases: initial load, redirects,
+    // blank-screen loops, and re-hits. Even if every other timeout gets
+    // cancelled/reset, this one guarantees the slot is freed within 45s.
+    _masterTimeout = Timer(const Duration(seconds: 45), () {
+      if (!_finished && mounted) {
+        debugPrint(
+          '[LinkQueue] 🛡️ Slot ${widget.slotIndex} master timeout (45s from load start) — force-finishing: ${link.url}',
+        );
+        _finished = true;
+        _viewTimer?.cancel();
+        _timeoutTimer?.cancel();
+        LinkQueueManager.instance.onSlotError(widget.slotIndex);
       }
     });
 
     try {
-      final uri = Uri.parse(widget.session.url);
+      final uri = Uri.parse(link.url);
       _controller.loadRequest(uri);
     } catch (e) {
-      debugPrint('[FullWebView] ❌ Invalid URL: ${widget.session.url}');
-      _onSessionError();
+      debugPrint(
+        '[LinkQueue] ❌ Slot ${widget.slotIndex} Invalid URL: ${link.url}',
+      );
+      _finished = true;
+      _isLoading = false;
+      _masterTimeout?.cancel();
+      // Mark as error immediately so it's removed from queue
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        LinkQueueManager.instance.onSlotError(widget.slotIndex);
+      });
     }
+
+    debugPrint('[LinkQueue] ▶ Slot ${widget.slotIndex} loading: ${link.url}');
+
+    // ── HARD TIMEOUT: 20s max to receive onPageFinished ──
+    _timeoutTimer = Timer(const Duration(seconds: 20), () {
+      if (!_finished && mounted) {
+        debugPrint(
+          '[LinkQueue] ⏰ Slot ${widget.slotIndex} load timed out (20s): ${link.url}',
+        );
+        _finished = true;
+        _viewTimer?.cancel();
+        _masterTimeout?.cancel();
+        LinkQueueManager.instance.onSlotError(widget.slotIndex);
+      }
+    });
   }
 
-  void _handlePageLoaded(String url) async {
-    if (_isCompleted) return;
+  @override
+  void dispose() {
+    _viewTimer?.cancel();
+    _timeoutTimer?.cancel();
+    _masterTimeout?.cancel();
+    if (!_finished && widget.activeLink != null) {
+      final slotIndex = widget.slotIndex;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        LinkQueueManager.instance.onSlotError(slotIndex);
+      });
+    }
+    super.dispose();
+  }
+
+  /// Page loaded — check if it's an actual page or an error page.
+  void _onPageFinished(String url) async {
+    if (_finished) return;
     if (url == 'about:blank') return;
 
-    _loadTimeoutTimer?.cancel();
+    // Cancel the load timeout — page has started responding.
+    // The master timeout (started at load begin) is still running as a hard cap.
+    _timeoutTimer?.cancel();
+    _viewTimer?.cancel();
 
-    // Verify page content via JS
+    _checkPageLoaded(url);
+  }
+
+  /// Check if the page has rendered actual contents (not a blank/white screen)
+  void _checkPageLoaded(String url) async {
+    if (_finished) return;
+    if (widget.activeLink == null) return;
+
     try {
       final result = await _controller.runJavaScriptReturningResult('''
         (function() {
@@ -218,7 +373,8 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
             combined.indexOf('connection refused') !== -1 ||
             combined.indexOf('dns_probe') !== -1 ||
             combined.indexOf('web page not available') !== -1 ||
-            combined.indexOf('this site can') !== -1
+            combined.indexOf('this site can') !== -1 ||
+            combined.indexOf('page not found') !== -1
           ) {
             return 'error';
           }
@@ -227,822 +383,80 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
       ''');
 
       final status = result.toString().replaceAll('"', '');
+
       if (status == 'error') {
-        debugPrint('[FullWebView] ❌ Error page detected: $url');
-        _onSessionError();
+        debugPrint(
+          '[LinkQueue] ❌ Slot ${widget.slotIndex} error page detected: $url',
+        );
+        _finished = true;
+        _viewTimer?.cancel();
+        _masterTimeout?.cancel();
+        LinkQueueManager.instance.onSlotError(widget.slotIndex);
         return;
       }
-    } catch (_) {}
-
-    _startCountdown();
-  }
-
-  void _startCountdown() {
-    if (_isPageReady || _isCompleted) return;
-    _isPageReady = true;
-
-    _countdownTicker?.cancel();
-    _countdownTicker = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted || _isCompleted) {
-        timer.cancel();
-        return;
-      }
-
-      setState(() {
-        if (_remainingSeconds > 0) {
-          _remainingSeconds--;
-        }
-      });
-
-      if (_remainingSeconds <= 0) {
-        timer.cancel();
-        _onSessionFinished();
-      }
-    });
-  }
-
-  void _onSessionFinished() {
-    if (_isCompleted) return;
-    _isCompleted = true;
-    _countdownTicker?.cancel();
-    _loadTimeoutTimer?.cancel();
-    _masterTimeoutTimer?.cancel();
-
-    LinkQueueManager.instance.onSessionFinished();
-  }
-
-  void _onSessionError() {
-    if (_isCompleted) return;
-    _isCompleted = true;
-    _countdownTicker?.cancel();
-    _loadTimeoutTimer?.cancel();
-    _masterTimeoutTimer?.cancel();
-
-    LinkQueueManager.instance.onSessionError();
-  }
-
-  void _onCloseManually() {
-    _isCompleted = true;
-    _countdownTicker?.cancel();
-    _loadTimeoutTimer?.cancel();
-    _masterTimeoutTimer?.cancel();
-
-    if (widget.session.isAutoPlay) {
-      widget.onPauseAutoPlay?.call();
-      LinkQueueManager.instance.requestPauseAutoPlay();
+    } catch (_) {
+      // JS execution failed (e.g. cross-origin iframe security issues on runJavaScriptReturningResult)
+      // Treat as success so we don't get stuck in a loop.
     }
-    LinkQueueManager.instance.cancelViewing(completeLike: false);
-  }
 
-  @override
-  void dispose() {
-    _countdownTicker?.cancel();
-    _loadTimeoutTimer?.cancel();
-    _masterTimeoutTimer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final totalDuration = widget.session.durationSeconds;
-    final double progress = totalDuration > 0
-        ? (1.0 - (_remainingSeconds / totalDuration)).clamp(0.0, 1.0)
-        : 1.0;
-
-    final mainStack = Stack(
-      fit: StackFit.expand,
-      children: [
-        // ── Main WebView Viewport (Occupies 100% in PIP mode) ──
-        Positioned.fill(
-          top: widget.isPipMode ? 0 : 60,
-          child: WebViewWidget(controller: _controller),
-        ),
-
-            // ── Real-time Customizable Blur Overlay Layer (Disabled in PIP Mode) ──
-            if (!widget.isPipMode)
-              Positioned.fill(
-                top: 60,
-                child: ValueListenableBuilder<double>(
-                  valueListenable: webViewBlurIntensityNotifier,
-                  builder: (context, blurSigma, _) {
-                    if (blurSigma <= 0.1) {
-                      return const SizedBox.shrink();
-                    }
-                    return IgnorePointer(
-                      child: ClipRect(
-                        child: BackdropFilter(
-                          filter: ImageFilter.blur(
-                            sigmaX: blurSigma,
-                            sigmaY: blurSigma,
-                          ),
-                          child: Container(
-                            color: Colors.black.withValues(
-                              alpha: (0.15 + (blurSigma / 30.0) * 0.25).clamp(0.1, 0.5),
-                            ),
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-
-            // ── Loading Spinner in Center ──
-            if (_isLoading)
-              Positioned.fill(
-                top: widget.isPipMode ? 0 : 60,
-                child: Container(
-                  color: Colors.black.withValues(alpha: 0.35),
-                  child: Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        CircularProgressIndicator(
-                          valueColor: AlwaysStoppedAnimation<Color>(cs.primary),
-                          strokeWidth: widget.isPipMode ? 2 : 3,
-                        ),
-                        if (!widget.isPipMode) ...[
-                          const SizedBox(height: 12),
-                          Text(
-                            'Loading page...',
-                            style: getMediumStyle(
-                              fontSize: 13,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-
-            // ── PIP Mode Floating Mini Header & Progress ──
-            if (widget.isPipMode) ...[
-              // Linear Progress at very top
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: LinearProgressIndicator(
-                  value: progress,
-                  minHeight: 2.5,
-                  backgroundColor: Colors.black38,
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    _remainingSeconds <= 3 ? Colors.redAccent : cs.primary,
-                  ),
-                ),
-              ),
-              // Floating Timer Chip
-              Positioned(
-                top: 4,
-                right: 4,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.75),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: _remainingSeconds <= 3
-                          ? Colors.redAccent
-                          : cs.primary,
-                      width: 1,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: 8,
-                        height: 8,
-                        child: CircularProgressIndicator(
-                          value: progress,
-                          strokeWidth: 1.5,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                            _remainingSeconds <= 3
-                                ? Colors.redAccent
-                                : cs.primary,
-                          ),
-                          backgroundColor: Colors.white24,
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${_remainingSeconds}s',
-                        style: const TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-
-            // ── Standard Full Display Header Bar (Non-PIP Mode) ──
-            if (!widget.isPipMode)
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                height: 60,
-                child: Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        const Color(0xFF1E293B),
-                        const Color(0xFF0F172A),
-                      ],
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.5),
-                        blurRadius: 10,
-                        offset: const Offset(0, 3),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    children: [
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          child: Row(
-                            children: [
-                              // ── Status Badge ──
-                              Flexible(
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: widget.session.isAutoPlay
-                                        ? Colors.orange.withValues(alpha: 0.2)
-                                        : cs.primary.withValues(alpha: 0.2),
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(
-                                      color: widget.session.isAutoPlay
-                                          ? Colors.orange
-                                          : cs.primary,
-                                      width: 1,
-                                    ),
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(
-                                        widget.session.isAutoPlay
-                                            ? Icons.play_circle_fill_rounded
-                                            : Icons.link_rounded,
-                                        size: 14,
-                                        color: widget.session.isAutoPlay
-                                            ? Colors.orange
-                                            : cs.primary,
-                                      ),
-                                      const SizedBox(width: 4),
-                                      Flexible(
-                                        child: Text(
-                                          widget.session.isAutoPlay
-                                              ? 'P${widget.session.pageIndex} • ${widget.session.linkIndex}/${widget.session.totalLinks}'
-                                              : 'Viewing',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: getBoldStyle(
-                                            fontSize: 11,
-                                            color: Colors.white,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-
-                              const Spacer(),
-
-                              // ── Countdown Timer Pill ──
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 5,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: _remainingSeconds <= 3
-                                      ? Colors.red.withValues(alpha: 0.25)
-                                      : cs.primary.withValues(alpha: 0.25),
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(
-                                    color: _remainingSeconds <= 3
-                                        ? Colors.redAccent
-                                        : cs.primary,
-                                    width: 1.2,
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    SizedBox(
-                                      width: 14,
-                                      height: 14,
-                                      child: CircularProgressIndicator(
-                                        value: progress,
-                                        strokeWidth: 2,
-                                        valueColor:
-                                            AlwaysStoppedAnimation<Color>(
-                                          _remainingSeconds <= 3
-                                              ? Colors.redAccent
-                                              : cs.primary,
-                                        ),
-                                        backgroundColor: Colors.white24,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      '${_remainingSeconds}s',
-                                      style: getBoldStyle(
-                                        fontSize: 12,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-
-                              // ── Pause / Stop AutoPlay Button ──
-                              if (widget.session.isAutoPlay) ...[
-                                const SizedBox(width: 6),
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.pause_circle_filled_rounded,
-                                    color: Colors.orange,
-                                    size: 22,
-                                  ),
-                                  tooltip: 'Pause AutoPlay',
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                  onPressed: () {
-                                    widget.onPauseAutoPlay?.call();
-                                    _onCloseManually();
-                                  },
-                                ),
-                              ],
-
-                              const SizedBox(width: 6),
-
-                              // ── Close (X) Button ──
-                              IconButton(
-                                icon: const Icon(
-                                  Icons.close_rounded,
-                                  color: Colors.white70,
-                                  size: 22,
-                                ),
-                                tooltip: 'Close',
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
-                                onPressed: _onCloseManually,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-
-                      // ── Animated Linear Progress Bar ──
-                      LinearProgressIndicator(
-                        value: progress,
-                        minHeight: 3,
-                        backgroundColor: Colors.white10,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          _remainingSeconds <= 3
-                              ? Colors.redAccent
-                              : cs.primary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-            // ── Bottom Side Controls (PIP on left, Blur Customizer on right/full) ──
-            if (!widget.isPipMode) ...[
-              // Floating PIP Button (Bottom-Left)
-              if (widget.session.isAutoPlay)
-                const Positioned(
-                  left: 16,
-                  bottom: 16,
-                  child: _PipFloatingButton(),
-                ),
-
-              // Runtime Blur Customizer (Bottom-Right / Full-Width when expanded)
-              const Positioned(
-                left: 16,
-                right: 16,
-                bottom: 16,
-                child: _BlurCustomizerBottomBar(),
-              ),
-            ],
-          ],
+    final duration = LinkQueueManager.instance.randomViewDuration;
+    debugPrint(
+      '[LinkQueue] ✅ Slot ${widget.slotIndex} loaded content: $url (viewing for ${duration.inSeconds}s)',
+    );
+    _viewTimer = Timer(duration, () {
+      if (!_finished && mounted) {
+        debugPrint(
+          '[LinkQueue] ✅ Slot ${widget.slotIndex} view time elapsed — marking finished: $url',
         );
-
-    return Container(
-      color: Colors.black,
-      child: widget.isPipMode ? mainStack : SafeArea(child: mainStack),
-    );
-  }
-}
-
-/// Floating button on the bottom left of the WebView overlay to enter Picture-in-Picture mode.
-class _PipFloatingButton extends StatelessWidget {
-  const _PipFloatingButton();
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () async {
-          final pip = Pip();
-          try {
-            final isSupported = await pip.isSupported();
-            if (isSupported) {
-              await pip.start();
-            } else {
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: const Text(
-                      'PIP is not supported on this device',
-                    ),
-                    backgroundColor: Theme.of(context).colorScheme.error,
-                  ),
-                );
-              }
-            }
-          } catch (e) {
-            debugPrint('Failed to start PIP: $e');
-          }
-        },
-        borderRadius: BorderRadius.circular(24),
-        child: Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 14,
-            vertical: 8,
-          ),
-          decoration: BoxDecoration(
-            color: const Color(0xFF0F172A).withValues(alpha: 0.88),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: Colors.blueAccent.withValues(alpha: 0.5),
-              width: 1.2,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.4),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.picture_in_picture_alt_rounded,
-                color: Colors.blueAccent,
-                size: 18,
-              ),
-              SizedBox(width: 6),
-              Text(
-                'PIP Mode',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Interactive floating bottom bar allowing the user to customize blur intensity at runtime.
-class _BlurCustomizerBottomBar extends StatefulWidget {
-  const _BlurCustomizerBottomBar();
-
-  @override
-  State<_BlurCustomizerBottomBar> createState() =>
-      _BlurCustomizerBottomBarState();
-}
-
-class _BlurCustomizerBottomBarState extends State<_BlurCustomizerBottomBar> {
-  bool _isExpanded = false;
-  Timer? _debounceTimer;
-
-  void _saveBlurDebounced(double val) {
-    _debounceTimer?.cancel();
-    _debounceTimer = Timer(const Duration(milliseconds: 300), () async {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setDouble('webview_blur_intensity', val);
+        _finished = true;
+        _masterTimeout?.cancel();
+        LinkQueueManager.instance.onSlotFinished(widget.slotIndex);
+      }
     });
   }
 
-  @override
-  void dispose() {
-    _debounceTimer?.cancel();
-    super.dispose();
+  /// Network-level error (DNS, connection refused, etc.)
+  void _onWebResourceError(WebResourceError error) {
+    if (_finished) return;
+    if (error.isForMainFrame ?? false) {
+      debugPrint(
+        '[LinkQueue] ❌ Slot ${widget.slotIndex} main-frame error: ${error.description}',
+      );
+      _finished = true;
+      _viewTimer?.cancel();
+      _timeoutTimer?.cancel();
+      _masterTimeout?.cancel();
+      LinkQueueManager.instance.onSlotError(widget.slotIndex);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return ValueListenableBuilder<double>(
-      valueListenable: webViewBlurIntensityNotifier,
-      builder: (context, blurVal, _) {
-        if (!_isExpanded) {
-          // ── Collapsed Floating Pill ──
-          return Align(
-            alignment: Alignment.bottomRight,
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: () => setState(() => _isExpanded = true),
-                borderRadius: BorderRadius.circular(24),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0F172A).withValues(alpha: 0.85),
-                    borderRadius: BorderRadius.circular(24),
-                    border: Border.all(
-                      color: cs.primary.withValues(alpha: 0.4),
-                      width: 1.2,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.4),
-                        blurRadius: 10,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        blurVal > 0.1
-                            ? Icons.blur_on_rounded
-                            : Icons.blur_off_rounded,
-                        color: cs.primary,
-                        size: 18,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        blurVal > 0.1 ? 'Blur ${blurVal.round()}px' : 'Blur Off',
-                        style: getBoldStyle(
-                          fontSize: 12,
-                          color: Colors.white,
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      const Icon(
-                        Icons.tune_rounded,
-                        color: Colors.white70,
-                        size: 14,
-                      ),
-                    ],
+    return ClipRect(
+      child: Stack(
+        children: [
+          WebViewWidget(controller: _controller),
+          if (_isLoading)
+            Positioned(
+              right: 8,
+              bottom: 8,
+              child: Container(
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.65),
+                  shape: BoxShape.circle,
+                ),
+                child: const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                   ),
                 ),
               ),
             ),
-          );
-        }
-
-        // ── Expanded Customization Card ──
-        return Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: const Color(0xFF0F172A).withValues(alpha: 0.92),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: cs.primary.withValues(alpha: 0.4),
-              width: 1.5,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.5),
-                blurRadius: 16,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // ── Header Row ──
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.blur_on_rounded,
-                        color: cs.primary,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Customize Blur Intensity',
-                        style: getBoldStyle(
-                          fontSize: 13,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: cs.primary.withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          blurVal <= 0.1 ? 'OFF' : '${blurVal.round()}px',
-                          style: getBoldStyle(
-                            fontSize: 12,
-                            color: cs.primary,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.keyboard_arrow_down_rounded,
-                          color: Colors.white70,
-                          size: 20,
-                        ),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        onPressed: () => setState(() => _isExpanded = false),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-
-              // ── Quick Preset Chips ──
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    _PresetChip(
-                      label: 'Off',
-                      value: 0.0,
-                      current: blurVal,
-                      onSelected: (v) {
-                        webViewBlurIntensityNotifier.value = v;
-                        _saveBlurDebounced(v);
-                      },
-                    ),
-                    _PresetChip(
-                      label: 'Low (6px)',
-                      value: 6.0,
-                      current: blurVal,
-                      onSelected: (v) {
-                        webViewBlurIntensityNotifier.value = v;
-                        _saveBlurDebounced(v);
-                      },
-                    ),
-                    _PresetChip(
-                      label: 'Med (12px)',
-                      value: 12.0,
-                      current: blurVal,
-                      onSelected: (v) {
-                        webViewBlurIntensityNotifier.value = v;
-                        _saveBlurDebounced(v);
-                      },
-                    ),
-                    _PresetChip(
-                      label: 'High (20px)',
-                      value: 20.0,
-                      current: blurVal,
-                      onSelected: (v) {
-                        webViewBlurIntensityNotifier.value = v;
-                        _saveBlurDebounced(v);
-                      },
-                    ),
-                    _PresetChip(
-                      label: 'Max (30px)',
-                      value: 30.0,
-                      current: blurVal,
-                      onSelected: (v) {
-                        webViewBlurIntensityNotifier.value = v;
-                        _saveBlurDebounced(v);
-                      },
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 8),
-
-              // ── Smooth Live Slider ──
-              SliderTheme(
-                data: SliderTheme.of(context).copyWith(
-                  trackHeight: 4,
-                  activeTrackColor: cs.primary,
-                  inactiveTrackColor: Colors.white24,
-                  thumbColor: cs.primary,
-                  overlayColor: cs.primary.withValues(alpha: 0.2),
-                  thumbShape: const RoundSliderThumbShape(
-                    enabledThumbRadius: 7,
-                  ),
-                ),
-                child: Slider(
-                  value: blurVal.clamp(0.0, 30.0),
-                  min: 0.0,
-                  max: 30.0,
-                  divisions: 30,
-                  onChanged: (newVal) {
-                    webViewBlurIntensityNotifier.value = newVal;
-                    _saveBlurDebounced(newVal);
-                  },
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _PresetChip extends StatelessWidget {
-  final String label;
-  final double value;
-  final double current;
-  final ValueChanged<double> onSelected;
-
-  const _PresetChip({
-    required this.label,
-    required this.value,
-    required this.current,
-    required this.onSelected,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final isSelected = (current - value).abs() < 1.0;
-
-    return Padding(
-      padding: const EdgeInsets.only(right: 6),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: () => onSelected(value),
-          borderRadius: BorderRadius.circular(12),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? cs.primary
-                  : Colors.white.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: isSelected
-                    ? cs.primary
-                    : Colors.white.withValues(alpha: 0.15),
-              ),
-            ),
-            child: Text(
-              label,
-              style: getBoldStyle(
-                fontSize: 10.5,
-                color: isSelected ? Colors.white : Colors.white70,
-              ),
-            ),
-          ),
-        ),
+        ],
       ),
     );
   }

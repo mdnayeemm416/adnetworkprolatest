@@ -46,11 +46,3 @@ class _TickNextCooldown extends FeedEvent {
 class _TickPageWait extends FeedEvent {
   const _TickPageWait();
 }
-
-/// Internal: update BLoC state when LinkQueueManager auto-fetches fresh links.
-class _UpdateLinksFromQueue extends FeedEvent {
-  final List<LinkModel> links;
-  const _UpdateLinksFromQueue(this.links);
-  @override
-  List<Object?> get props => [links];
-}

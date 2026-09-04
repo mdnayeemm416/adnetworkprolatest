@@ -19,7 +19,6 @@ import 'package:adnetwork/layers/dto/api_response.dart';
 
 import 'dart:async';
 import 'dart:io' show Platform;
-import 'package:adnetwork/core/services/link_queue_manager.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -39,11 +38,12 @@ class FeedScreen extends StatefulWidget {
 
 class _FeedScreenState extends State<FeedScreen> with RouteAware {
   late ScrollController _scrollController;
-  StreamSubscription<String>? _completedLinkSub;
-  StreamSubscription<void>? _autoPlayPauseSub;
+  Timer? _botTimer;
   // ── Debounce timer for overlay opacity disk writes ──
   Timer? _opacityDebounceTimer;
   bool _isAutoScrolling = false;
+  int _currentTargetIndex = 0;
+  bool _isProcessingTarget = false;
   final _pip = Pip();
   bool _isAutoLikeEnabled = false;
 
@@ -56,21 +56,6 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
     _loadOverlayOpacity();
     // Keep screen awake while app is in foreground
     WakelockPlus.enable();
-
-    // Listen for completed link viewings — no longer drives autoplay advancement
-    // (LinkQueueManager handles auto-advance internally). This is kept for any
-    // UI refresh needs when a link is completed.
-    _completedLinkSub = LinkQueueManager.instance.completedLinkStream.listen((linkId) {
-      // UI will update via BLoC state changes
-    });
-
-    // Listen for pause requests from the WebView overlay (e.g. user closed or tapped pause)
-    _autoPlayPauseSub = LinkQueueManager.instance.autoPlayPauseStream.listen((_) {
-      if (mounted && _isAutoScrolling) {
-        _stopAutoplayTemporarily();
-      }
-    });
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         if (widget.isActive) {
@@ -100,6 +85,16 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
     final prefs = await SharedPreferences.getInstance();
     final opacity = prefs.getDouble('webview_overlay_opacity') ?? 0.0;
     webViewOverlayOpacityNotifier.value = opacity;
+  }
+
+  /// Debounced — only writes to disk 300ms after the user stops dragging
+  /// to avoid hammering SharedPreferences on every slider frame.
+  void _saveOverlayOpacityDebounced(double opacity) {
+    _opacityDebounceTimer?.cancel();
+    _opacityDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('webview_overlay_opacity', opacity);
+    });
   }
 
   Future<void> _loadAutoLikeStatus() async {
@@ -150,8 +145,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
   @override
   void dispose() {
     routeObserver.unsubscribe(this);
-    _completedLinkSub?.cancel();
-    _autoPlayPauseSub?.cancel();
+    _botTimer?.cancel();
     _opacityDebounceTimer?.cancel();
     _scrollController.dispose();
     _pip.dispose();
@@ -162,22 +156,34 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
     setState(() {
       _isAutoScrolling = !_isAutoScrolling;
       TokenStorage.instance.saveFeedAutoplay(_isAutoScrolling ? 1 : 0);
+      _isProcessingTarget = false;
+      if (_isAutoScrolling) {
+        _currentTargetIndex = 0;
+        _scrollToIndex(0);
+        _isProcessingTarget = true;
+        Future.delayed(const Duration(milliseconds: 900), () {
+          if (mounted && _isAutoScrolling) {
+            setState(() {
+              _isProcessingTarget = false;
+            });
+            _startBotTimer();
+          }
+        });
+      } else {
+        _botTimer?.cancel();
+        _botTimer = null;
+      }
     });
-
-    if (_isAutoScrolling) {
-      _processAutoPlay();
-    } else {
-      LinkQueueManager.instance.cancelViewing(completeLike: false);
-    }
   }
 
   void _stopAutoplayTemporarily() {
     if (_isAutoScrolling) {
       setState(() {
         _isAutoScrolling = false;
+        _isProcessingTarget = false;
+        _botTimer?.cancel();
+        _botTimer = null;
       });
-      TokenStorage.instance.saveFeedAutoplay(0);
-      LinkQueueManager.instance.cancelViewing(completeLike: false);
     }
   }
 
@@ -206,51 +212,109 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
     }
   }
 
-  void _processAutoPlay() {
-    if (!mounted || !_isAutoScrolling) return;
+  void _startBotTimer() {
+    _botTimer?.cancel();
+    // Reduced from 600ms to 800ms — imperceptible difference but meaningfully
+    // less CPU pressure during prolonged auto-like sessions.
+    _botTimer = Timer.periodic(const Duration(milliseconds: 800), (timer) {
+      if (!mounted || !_isAutoScrolling) {
+        timer.cancel();
+        return;
+      }
 
-    // If already viewing in full screen, let that session complete
-    if (LinkQueueManager.instance.isViewing) return;
+      if (_isProcessingTarget) return;
 
-    final feedBloc = context.read<FeedBloc>();
-    final state = feedBloc.state;
+      final feedBloc = context.read<FeedBloc>();
+      final state = feedBloc.state;
 
-    // Check if feed is loading, waiting for page, in cooldown, or locked
-    if (state.status == FeedStatus.loading ||
-        state.pageWaitSeconds > 0 ||
-        state.nextCooldownSeconds > 0 ||
-        state.isLocked) {
-      return;
-    }
+      // Wait if loading or in page wait cooldown
+      if (state.pageWaitSeconds > 0 ||
+          state.nextCooldownSeconds > 0 ||
+          state.status == FeedStatus.loading) {
+        return;
+      }
 
-    // Check the Hive queue for the next link
-    if (!LinkQueueManager.instance.hasQueuedLinks) {
-      // No more links in Hive queue — advance to NEXT page
-      debugPrint(
-        '[AutoPlay] 🎉 Hive queue empty! Advancing to page ${state.currentPage + 1}',
-      );
-      feedBloc.add(ChangeFeedPage(state.currentPage + 1));
-      return;
-    }
+      if (state.links.isEmpty) return;
 
-    // Peek at the next queued link from Hive
-    final nextLink = LinkQueueManager.instance.peekNext();
-    if (nextLink == null) return;
+      // Boundary safety check
+      if (_currentTargetIndex >= state.links.length) {
+        _currentTargetIndex = 0;
+      }
 
-    // Find the index in the current state for scrolling purposes
-    final targetIndex = state.links.indexWhere((l) => l.id == nextLink.linkId);
-    if (targetIndex >= 0) {
-      _scrollToIndex(targetIndex);
-    }
+      final link = state.links[_currentTargetIndex];
 
-    LinkQueueManager.instance.startViewing(
-      url: nextLink.url,
-      linkId: nextLink.linkId,
-      pageIndex: state.currentPage,
-      linkIndex: 1,
-      totalLinks: LinkQueueManager.instance.queueLength,
-      isAutoPlay: true,
-    );
+      if (link.isLiked) {
+        _currentTargetIndex++;
+        if (_currentTargetIndex >= state.links.length) {
+          _currentTargetIndex = 0;
+          feedBloc.add(ChangeFeedPage(state.currentPage + 1));
+        } else {
+          _isProcessingTarget = true;
+          _scrollToIndex(_currentTargetIndex);
+          Future.delayed(const Duration(milliseconds: 900), () {
+            if (mounted) {
+              setState(() {
+                _isProcessingTarget = false;
+              });
+            }
+          });
+        }
+      } else {
+        // wait for the likeCooldownSeconds
+        if (state.likeCooldownSeconds > 0) {
+          return;
+        }
+
+        _isProcessingTarget = true;
+
+        // Human-like delay before liking (1000ms)
+        Future.delayed(const Duration(milliseconds: 1000), () {
+          if (!mounted || !_isAutoScrolling) {
+            _isProcessingTarget = false;
+            return;
+          }
+
+          // do the action onLike
+          feedBloc.add(ToggleLike(link.id ?? ''));
+
+          // Human-like delay after liking before scrolling (1500ms)
+          Future.delayed(const Duration(milliseconds: 1500), () {
+            if (!mounted || !_isAutoScrolling) {
+              _isProcessingTarget = false;
+              return;
+            }
+
+            if (context.mounted) {
+              // when index end then call next page
+              if (_currentTargetIndex == state.links.length - 1) {
+                feedBloc.add(ChangeFeedPage(state.currentPage + 1));
+                setState(() {
+                  _currentTargetIndex = 0;
+                  _isProcessingTarget = false;
+                });
+              } else {
+                final int nextIndex = _currentTargetIndex + 1;
+                _scrollToIndex(nextIndex);
+
+                // Wait for scroll animation to complete, then update index
+                Future.delayed(const Duration(milliseconds: 900), () {
+                  if (!mounted || !_isAutoScrolling) {
+                    _isProcessingTarget = false;
+                    return;
+                  }
+                  setState(() {
+                    _currentTargetIndex = nextIndex;
+                    _isProcessingTarget = false;
+                  });
+                });
+              }
+            } else {
+              _isProcessingTarget = false;
+            }
+          });
+        });
+      }
+    });
   }
 
   void _scrollToIndex(int index) {
@@ -264,136 +328,6 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
     }
   }
 
-  Widget _buildPageProgressCard(BuildContext context, FeedState state) {
-    final cs = Theme.of(context).colorScheme;
-    final total = state.links.length;
-    final completed = state.links.where((l) => l.isLiked).length;
-    final double progress =
-        total > 0 ? (completed / total).clamp(0.0, 1.0) : 0.0;
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHigh.withValues(alpha: 0.6),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: _isAutoScrolling
-              ? Colors.orange.withValues(alpha: 0.5)
-              : cs.primary.withValues(alpha: 0.2),
-          width: 1.5,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.auto_stories_rounded,
-                    color: cs.primary,
-                    size: 20,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Page ${state.currentPage} Overview',
-                    style: getBoldStyle(
-                      fontSize: 15,
-                      color: cs.onSurface,
-                    ),
-                  ),
-                ],
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 4,
-                ),
-                decoration: BoxDecoration(
-                  color: _isAutoScrolling
-                      ? Colors.orange.withValues(alpha: 0.15)
-                      : cs.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: _isAutoScrolling
-                        ? Colors.orange
-                        : cs.outline.withValues(alpha: 0.3),
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: _isAutoScrolling ? Colors.orange : Colors.grey,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      _isAutoScrolling ? 'AutoPlay Active' : 'AutoPlay Idle',
-                      style: getBoldStyle(
-                        fontSize: 11,
-                        color: _isAutoScrolling
-                            ? Colors.orange
-                            : cs.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Completed: $completed of $total links (${(progress * 100).toInt()}%)',
-                style: getMediumStyle(
-                  fontSize: 13,
-                  color: cs.onSurface.withValues(alpha: 0.8),
-                ),
-              ),
-              if (completed == total && total > 0)
-                Text(
-                  '✅ Page Complete',
-                  style: getBoldStyle(
-                    fontSize: 12,
-                    color: Colors.green,
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: LinearProgressIndicator(
-              value: progress,
-              minHeight: 8,
-              backgroundColor: cs.surfaceContainerHighest,
-              valueColor: AlwaysStoppedAnimation<Color>(
-                completed == total ? Colors.green : cs.primary,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -402,24 +336,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
     //    control which top-level card is shown change, OR when the links
     //    list / loading status changes.  Countdown-only ticks (every 1s)
     //    will NOT reach child BlocBuilders that have their own buildWhen.
-    return BlocConsumer<FeedBloc, FeedState>(
-      listenWhen: (prev, curr) =>
-          prev.status != curr.status ||
-          prev.currentPage != curr.currentPage ||
-          prev.pageWaitSeconds != curr.pageWaitSeconds,
-      listener: (context, state) {
-        if (_isAutoScrolling &&
-            state.status == FeedStatus.loaded &&
-            state.pageWaitSeconds == 0 &&
-            state.nextCooldownSeconds == 0 &&
-            !LinkQueueManager.instance.isViewing) {
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted && _isAutoScrolling) {
-              _processAutoPlay();
-            }
-          });
-        }
-      },
+    return BlocBuilder<FeedBloc, FeedState>(
       buildWhen: (prev, curr) =>
           prev.status != curr.status ||
           prev.links != curr.links ||
@@ -831,10 +748,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
                         ? _buildLockedFeedView(context, state)
                         : _buildEmptyFeedView(context),
                   ),
-                if (state.links.isNotEmpty) ...[
-                  SliverToBoxAdapter(
-                    child: _buildPageProgressCard(context, state),
-                  ),
+                if (state.links.isNotEmpty)
                   SliverList(
                     delegate: SliverChildBuilderDelegate((context, index) {
                       final link = state.links[index];
@@ -846,17 +760,13 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
                           link: link,
                           likeCooldownSeconds: state.likeCooldownSeconds,
                           onLike: () {
-                            if (link.isLiked) return;
-                            if (link.url != null && link.url!.isNotEmpty) {
-                              LinkQueueManager.instance.startViewing(
-                                url: link.url!,
-                                linkId: link.id ?? '',
-                                pageIndex: state.currentPage,
-                                linkIndex: index + 1,
-                                totalLinks: state.links.length,
-                                isAutoPlay: false,
-                              );
-                            }
+                            Future.microtask(() {
+                              if (context.mounted) {
+                                context.read<FeedBloc>().add(
+                                  ToggleLike(link.id ?? ''),
+                                );
+                              }
+                            });
                           },
                           onUserTap: () => Navigator.of(context).pushNamed(
                             '/user-profile',
@@ -866,7 +776,6 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
                       );
                     }, childCount: state.links.length),
                   ),
-                ],
 
                 // ── Notices Section ──
                 SliverToBoxAdapter(
@@ -1248,6 +1157,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
                     isAutoLikeEnabled: _isAutoLikeEnabled,
                     onToggleAutoPlay: () => _toggleAutoPlay(state),
                     onShowSubscription: () => _showSubscriptionDialog(context),
+                    saveOpacityDebounced: _saveOverlayOpacityDebounced,
                   ),
                 ),
             ],
@@ -1769,12 +1679,13 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
 // By isolating the opacity-slider toggle and auto-scroll FAB state here,
 // tapping the FAB or dragging the slider rebuilds ONLY this small widget
 // and never triggers a rebuild of the BLoC-driven feed list above.
-class _FeedFabColumn extends StatelessWidget {
+class _FeedFabColumn extends StatefulWidget {
   final Pip pip;
   final bool isAutoScrolling;
   final bool isAutoLikeEnabled;
   final VoidCallback onToggleAutoPlay;
   final VoidCallback onShowSubscription;
+  final void Function(double) saveOpacityDebounced;
 
   const _FeedFabColumn({
     required this.pip,
@@ -1782,7 +1693,15 @@ class _FeedFabColumn extends StatelessWidget {
     required this.isAutoLikeEnabled,
     required this.onToggleAutoPlay,
     required this.onShowSubscription,
+    required this.saveOpacityDebounced,
   });
+
+  @override
+  State<_FeedFabColumn> createState() => _FeedFabColumnState();
+}
+
+class _FeedFabColumnState extends State<_FeedFabColumn> {
+  bool _showOpacitySlider = false;
 
   @override
   Widget build(BuildContext context) {
@@ -1792,15 +1711,98 @@ class _FeedFabColumn extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
+        // ── Opacity slider panel ──
+        if (_showOpacitySlider) ...[
+          Container(
+            width: 220,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerHigh.withValues(alpha: 0.95),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: cs.primary.withValues(alpha: 0.3)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.2),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'White Overlay',
+                      style: getBoldStyle(fontSize: 12, color: cs.onSurface),
+                    ),
+                    ValueListenableBuilder<double>(
+                      valueListenable: webViewOverlayOpacityNotifier,
+                      builder: (context, val, _) => Text(
+                        '${(val * 100).round()}%',
+                        style: getBoldStyle(fontSize: 12, color: cs.primary),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                ValueListenableBuilder<double>(
+                  valueListenable: webViewOverlayOpacityNotifier,
+                  builder: (context, val, _) {
+                    return SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        trackHeight: 4,
+                        thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 7,
+                        ),
+                      ),
+                      child: Slider(
+                        value: val,
+                        min: 0.0,
+                        max: 1.0,
+                        activeColor: cs.primary,
+                        onChanged: (newVal) {
+                          webViewOverlayOpacityNotifier.value = newVal;
+                          // Debounced — only writes to disk after dragging stops
+                          widget.saveOpacityDebounced(newVal);
+                        },
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+
+        // ── Overlay toggle FAB ──
+        FloatingActionButton(
+          heroTag: 'overlayBtn',
+          onPressed: () {
+            setState(() => _showOpacitySlider = !_showOpacitySlider);
+          },
+          backgroundColor:
+              _showOpacitySlider ? cs.primary : cs.surfaceContainerHigh,
+          foregroundColor: _showOpacitySlider ? Colors.white : cs.onSurface,
+          mini: true,
+          tooltip: 'WebView White Overlay Density',
+          child: const Icon(Icons.layers_outlined, size: 20),
+        ),
+        const SizedBox(height: 12),
+
         // ── PIP button (only when auto-play is running) ──
-        if (isAutoScrolling) ...[
+        if (widget.isAutoScrolling) ...[
           FloatingActionButton(
             heroTag: 'pipBtn',
             onPressed: () async {
               try {
-                final isSupported = await pip.isSupported();
+                final isSupported = await widget.pip.isSupported();
                 if (isSupported) {
-                  await pip.start();
+                  await widget.pip.start();
                 } else {
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -1821,7 +1823,6 @@ class _FeedFabColumn extends StatelessWidget {
             backgroundColor: Colors.blueAccent,
             foregroundColor: Colors.white,
             mini: true,
-            tooltip: 'Picture-in-Picture',
             child: const Icon(
               Icons.picture_in_picture_alt_rounded,
               size: 20,
@@ -1834,23 +1835,23 @@ class _FeedFabColumn extends StatelessWidget {
         FloatingActionButton.extended(
           heroTag: 'autoPlayBtn',
           onPressed: () {
-            if (isAutoLikeEnabled) {
-              onToggleAutoPlay();
+            if (widget.isAutoLikeEnabled) {
+              widget.onToggleAutoPlay();
             } else {
-              onShowSubscription();
+              widget.onShowSubscription();
             }
           },
           backgroundColor:
-              isAutoScrolling ? Colors.orange.shade700 : cs.primary,
+              widget.isAutoScrolling ? Colors.orange.shade700 : cs.primary,
           foregroundColor: Colors.white,
           icon: Icon(
-            isAutoScrolling
+            widget.isAutoScrolling
                 ? Icons.pause_rounded
                 : Icons.play_arrow_rounded,
             size: 24,
           ),
           label: Text(
-            isAutoScrolling ? 'PAUSE' : 'AUTO PLAY',
+            widget.isAutoScrolling ? 'PAUSE' : 'AUTO PLAY',
             style: getBoldStyle(fontSize: 12, color: Colors.white),
           ),
         ),
