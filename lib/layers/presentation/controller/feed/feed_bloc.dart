@@ -18,6 +18,8 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
   Timer? _pageWaitTimer;
   Timer? _nextCooldownTimer;
   StreamSubscription<String>? _queueCompletionSub;
+  StreamSubscription<void>? _allLinksCompletedSub;
+  StreamSubscription<List<LinkModel>>? _feedRefreshSub;
   int _pendingPage = 1;
   bool _isRefresh = false;
 
@@ -30,17 +32,33 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     on<_TickLikeCooldown>(_onTickLikeCooldown);
     on<_TickPageWait>(_onTickPageWait);
     on<_TickNextCooldown>(_onTickNextCooldown);
+    on<_UpdateLinksFromQueue>(_onUpdateLinksFromQueue);
 
     // Listen for completed link viewings from the WebView queue
     // and fire the like API at that point.
     _queueCompletionSub = LinkQueueManager.instance.completedLinkStream.listen(
       _onLinkViewed,
     );
+
+    // Listen for when all queued links have been consumed during autoplay
+    // to automatically advance to the next page.
+    _allLinksCompletedSub = LinkQueueManager.instance.allLinksCompletedStream.listen((_) {
+      debugPrint('[FeedBloc] 🎉 All queued links done — auto-advancing to next page');
+      add(ChangeFeedPage(state.currentPage + 1));
+    });
+
+    // Listen for fresh links fetched by LinkQueueManager during autoplay/PIP
+    // and update BLoC state to keep UI in sync.
+    _feedRefreshSub = LinkQueueManager.instance.feedRefreshStream.listen((links) {
+      debugPrint('[FeedBloc] 🔄 Received ${links.length} fresh links from autoplay fetch');
+      add(_UpdateLinksFromQueue(links));
+    });
   }
 
   /// Called when a link has been fully viewed in the WebView.
-  /// Now it's safe to call the like API.
+  /// Now mark it liked in the state and call the like API.
   void _onLinkViewed(String linkId) {
+    add(ToggleLike(linkId));
     linkRepository
         .toggleLike(linkId)
         .then(
@@ -77,6 +95,10 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
         final links =
             response.dataList ??
             (response.data != null ? [response.data!] : <LinkModel>[]);
+
+        // Populate Hive queue with unliked links from API
+        await LinkQueueManager.instance.populateQueue(links);
+
         emit(
           state.copyWith(
             status: FeedStatus.loaded,
@@ -108,16 +130,12 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
   // ── Toggle Like (with cooldown) ──
 
   Future<void> _onToggleLike(ToggleLike event, Emitter<FeedState> emit) async {
-    // Block if cooldown is active
-    if (state.likeCooldownSeconds > 0) return;
-
-    // Optimistic update — apply immediately, no waiting for API
     final links = List<LinkModel>.from(state.links);
     final idx = links.indexWhere((l) => l.id == event.linkId);
     if (idx == -1) return;
 
     final link = links[idx];
-    if (link.isLiked) return; // Prevent unliking once liked
+    if (link.isLiked) return; // Prevent double-liking
 
     links[idx] = link.copyWith(isLiked: true, likesCount: link.likesCount + 1);
 
@@ -135,14 +153,6 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
 
     // Start the cooldown countdown timer
     _startLikeCooldown();
-
-    // DO NOT call the like API here.
-    // Instead, enqueue the link for background WebView viewing.
-    // The like API will be called automatically when the WebView
-    // finishes viewing this link (via completedLinkStream).
-    if (link.url != null) {
-      LinkQueueManager.instance.enqueue(link.url!, linkId: event.linkId);
-    }
   }
 
   // ── Like Cooldown Timer ──
@@ -273,6 +283,10 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
         final links =
             response.dataList ??
             (response.data != null ? [response.data!] : <LinkModel>[]);
+
+        // Populate Hive queue with unliked links from new page
+        await LinkQueueManager.instance.populateQueue(links);
+
         emit(
           state.copyWith(
             status: FeedStatus.loaded,
@@ -328,12 +342,26 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     }
   }
 
+  /// Handle fresh links pushed from LinkQueueManager during autoplay/PIP.
+  void _onUpdateLinksFromQueue(_UpdateLinksFromQueue event, Emitter<FeedState> emit) {
+    emit(
+      state.copyWith(
+        status: FeedStatus.loaded,
+        links: event.links,
+        currentPage: state.currentPage + 1,
+        hasMore: event.links.length >= 10,
+      ),
+    );
+  }
+
   @override
   Future<void> close() {
     _likeCooldownTimer?.cancel();
     _pageWaitTimer?.cancel();
     _nextCooldownTimer?.cancel();
     _queueCompletionSub?.cancel();
+    _allLinksCompletedSub?.cancel();
+    _feedRefreshSub?.cancel();
     return super.close();
   }
 }

@@ -12,9 +12,11 @@ import 'package:adnetwork/layers/presentation/controller/campaign/campaign_bloc.
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Hive.initFlutter();
   await MobileConfigManager.instance.init();
   await LinkQueueManager.instance.init();
   await WakelockPlus.enable();
