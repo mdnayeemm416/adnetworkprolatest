@@ -14,11 +14,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
+import 'package:adnetwork/core/services/pip_service.dart';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Hive.initFlutter();
   await MobileConfigManager.instance.init();
   await LinkQueueManager.instance.init();
+  PipService.instance.init();
   await WakelockPlus.enable();
   runApp(const MyApp());
 }

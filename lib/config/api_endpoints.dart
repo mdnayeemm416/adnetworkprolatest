@@ -16,6 +16,7 @@ class ApiEndpoints {
   static const String myScore = '/api/users/me/score';
   static const String myStats = '/api/users/me/stats';
   static const String myActivityStats = '/api/users/me/activity-stats';
+  static const String likeBackLimit = '/api/users/me/like-back-limit';
   static String userProfile(String id) => '/api/users/$id';
   static const String exploreUsers = '/api/users/explore';
   static String toggleFollow(String id) => '/api/users/$id/follow';

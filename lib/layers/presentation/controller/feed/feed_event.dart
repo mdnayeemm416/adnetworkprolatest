@@ -47,6 +47,16 @@ class _TickPageWait extends FeedEvent {
   const _TickPageWait();
 }
 
+/// Check and synchronize feed break & next button cooldowns from persistent storage and wall-clock time.
+class CheckFeedCooldowns extends FeedEvent {
+  const CheckFeedCooldowns();
+}
+
+/// Internal: tick the feed break cooldown timer by 1 second.
+class _TickFeedBreakCooldown extends FeedEvent {
+  const _TickFeedBreakCooldown();
+}
+
 /// Internal: update BLoC state when LinkQueueManager auto-fetches fresh links.
 class _UpdateLinksFromQueue extends FeedEvent {
   final List<LinkModel> links;
@@ -54,3 +64,4 @@ class _UpdateLinksFromQueue extends FeedEvent {
   @override
   List<Object?> get props => [links];
 }
+

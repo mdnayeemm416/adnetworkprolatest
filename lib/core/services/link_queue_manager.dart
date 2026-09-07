@@ -6,6 +6,7 @@ import 'package:adnetwork/core/services/mobile_config_manager.dart';
 import 'package:adnetwork/core/services/api_client.dart';
 import 'package:adnetwork/config/api_endpoints.dart';
 import 'package:adnetwork/layers/data/model/link_model.dart';
+import 'package:adnetwork/core/services/pip_service.dart';
 
 /// Represents an active link session being displayed in the full display WebView.
 class ActiveViewSession {
@@ -60,6 +61,9 @@ class QueuedLink {
 ///   the link API is called again to fetch fresh links and continue autoplay.
 /// - If the user closes the WebView, autoplay stops but remaining Hive entries
 ///   are preserved for resumption.
+/// Global notifier indicating whether the app is currently displaying in Picture-in-Picture mode.
+ValueNotifier<bool> get isPipModeNotifier => PipService.instance.isPipMode;
+
 class LinkQueueManager {
   static final LinkQueueManager instance = LinkQueueManager._();
   LinkQueueManager._();
@@ -100,6 +104,9 @@ class LinkQueueManager {
 
   ActiveViewSession? get currentSession => activeSessionNotifier.value;
   bool get isViewing => activeSessionNotifier.value != null;
+
+  /// Whether a feed break time is currently active.
+  bool isFeedBreakActive = false;
 
   /// Generate a random delay for page viewing based on the mobile config.
   int get randomViewDurationSeconds {
@@ -267,6 +274,11 @@ class LinkQueueManager {
     bool isAutoPlay = false,
     int? customDurationSeconds,
   }) {
+    if (isFeedBreakActive) {
+      debugPrint('[LinkQueue] 🛑 Cannot start viewing — feed break time is active');
+      return;
+    }
+
     if (url.isEmpty || !url.startsWith('http')) {
       debugPrint('[LinkQueue] ⚠️ Skipping invalid URL: $url');
       if (linkId.isNotEmpty) {
@@ -320,8 +332,8 @@ class LinkQueueManager {
       _completedLinkController.add(linkId);
     }
 
-    // In autoplay mode, directly swap to next queued link (WebView stays open)
-    if (wasAutoPlay && hasQueuedLinks) {
+    // In autoplay mode, directly swap to next queued link (WebView stays open) if not in break time
+    if (wasAutoPlay && hasQueuedLinks && !isFeedBreakActive) {
       final next = peekNext();
       if (next != null) {
         final duration = randomViewDurationSeconds;
@@ -341,15 +353,18 @@ class LinkQueueManager {
       }
     }
 
-    // Queue empty during autoplay — fetch fresh links from API and continue
-    if (wasAutoPlay) {
+    // Queue empty during autoplay — fetch fresh links from API and continue if not in break time
+    if (wasAutoPlay && !isFeedBreakActive) {
       _fetchAndContinueAutoPlay(pageIndex);
       return;
     }
 
-    // Not autoplay — close WebView
+    // Not autoplay or break time active — close WebView
     activeSessionNotifier.value = null;
     _sessionController.add(null);
+    if (isFeedBreakActive && wasAutoPlay) {
+      requestPauseAutoPlay();
+    }
   }
 
   /// Called when the session encountered an error or timed out.
@@ -370,8 +385,8 @@ class LinkQueueManager {
       _completedLinkController.add(linkId);
     }
 
-    // In autoplay mode, directly swap to next queued link (WebView stays open)
-    if (wasAutoPlay && hasQueuedLinks) {
+    // In autoplay mode, directly swap to next queued link (WebView stays open) if not in break time
+    if (wasAutoPlay && hasQueuedLinks && !isFeedBreakActive) {
       final next = peekNext();
       if (next != null) {
         final duration = randomViewDurationSeconds;
@@ -391,15 +406,18 @@ class LinkQueueManager {
       }
     }
 
-    // Queue empty during autoplay — fetch fresh links from API and continue
-    if (wasAutoPlay) {
+    // Queue empty during autoplay — fetch fresh links from API and continue if not in break time
+    if (wasAutoPlay && !isFeedBreakActive) {
       _fetchAndContinueAutoPlay(pageIndex);
       return;
     }
 
-    // Not autoplay — close WebView
+    // Not autoplay or break time active — close WebView
     activeSessionNotifier.value = null;
     _sessionController.add(null);
+    if (isFeedBreakActive && wasAutoPlay) {
+      requestPauseAutoPlay();
+    }
   }
 
   void requestPauseAutoPlay() {

@@ -1,20 +1,34 @@
 import 'package:adnetwork/config/asset_manager.dart';
 import 'package:adnetwork/config/theme/styles_manager.dart';
 import 'package:adnetwork/core/services/token_storage.dart';
+import 'package:adnetwork/layers/data/repo/remote/user_repository.dart';
 import 'package:adnetwork/layers/presentation/controller/profile/profile_bloc.dart';
 import 'package:adnetwork/layers/presentation/controller/theme/theme_cubit.dart';
 import 'package:adnetwork/layers/presentation/widget/user_avatar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  @override
+  void initState() {
+    super.initState();
+    context.read<ProfileBloc>().add(const LoadProfileStats());
+  }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final user = context.watch<ProfileBloc>().state.currentUser;
+    final profileState = context.watch<ProfileBloc>().state;
+    final user = profileState.currentUser;
+    final stats = profileState.stats;
 
     return Scaffold(
       backgroundColor: cs.surface,
@@ -35,7 +49,7 @@ class SettingsScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: 8),
-      
+
               // ── Account Card ──
               _SectionCard(
                 isDark: isDark,
@@ -77,7 +91,30 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-      
+
+              // ── Activity & Limits ──
+              _SectionTitle(title: 'Activity & Limits', cs: cs),
+              const SizedBox(height: 10),
+              _SectionCard(
+                isDark: isDark,
+                cs: cs,
+                child: Column(
+                  children: [
+                    _SettingsValueTile(
+                      icon: Icons.thumb_up_alt_rounded,
+                      label: 'Max Like Back Limit',
+                      subtitle: 'Daily like-back threshold',
+                      value: stats != null
+                          ? (stats.maxLikeBackLimit > 0 ? '${stats.maxLikeBackLimit}' : '0')
+                          : '...',
+                      cs: cs,
+                      onTap: () => _showMaxLikeBackLimitSheet(context, stats?.maxLikeBackLimit ?? 0),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+
               // ── Appearance ──
               _SectionTitle(title: 'Appearance', cs: cs),
               const SizedBox(height: 10),
@@ -120,7 +157,7 @@ class SettingsScreen extends StatelessWidget {
                 },
               ),
               const SizedBox(height: 24),
-      
+
               // ── Account & Security ──
               _SectionTitle(title: 'Account & Security', cs: cs),
               const SizedBox(height: 10),
@@ -139,7 +176,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-      
+
               // ── Support ──
               _SectionTitle(title: 'Support', cs: cs),
               const SizedBox(height: 10),
@@ -172,7 +209,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-      
+
               // ── App Info ──
               _SectionTitle(title: 'App Info', cs: cs),
               const SizedBox(height: 10),
@@ -212,7 +249,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-      
+
               // ── Version + Branding ──
               Center(
                 child: Column(
@@ -229,7 +266,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-      
+
               // ── Logout ──
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -264,6 +301,349 @@ class SettingsScreen extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+
+  void _showMaxLikeBackLimitSheet(BuildContext context, int currentLimit) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textController = TextEditingController(
+      text: currentLimit > 0 ? currentLimit.toString() : '',
+    );
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        bool isSaving = false;
+        String? errorMessage;
+
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            final viewInsets = MediaQuery.of(ctx).viewInsets;
+
+            Future<void> saveLimit() async {
+              final text = textController.text.trim();
+              final value = int.tryParse(text);
+
+              if (value == null || value < 1) {
+                setSheetState(() {
+                  errorMessage = 'Must be a positive integer >= 1';
+                });
+                return;
+              }
+
+              setSheetState(() {
+                isSaving = true;
+                errorMessage = null;
+              });
+
+              try {
+                final userRepo = RepositoryProvider.of<UserRepository>(context);
+                final response = await userRepo.updateMaxLikeBackLimit(value);
+
+                if (response.isSuccess) {
+                  if (context.mounted) {
+                    context.read<ProfileBloc>().add(const LoadProfileStats());
+                    Navigator.pop(sheetContext);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Row(
+                          children: [
+                            const Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                response.message ?? 'Max like back limit updated successfully',
+                                style: const TextStyle(color: Colors.white),
+                              ),
+                            ),
+                          ],
+                        ),
+                        backgroundColor: Colors.green.shade700,
+                        behavior: SnackBarBehavior.floating,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    );
+                  }
+                } else {
+                  setSheetState(() {
+                    isSaving = false;
+                    errorMessage = response.message ?? 'Failed to update limit';
+                  });
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Row(
+                          children: [
+                            const Icon(Icons.error_outline_rounded, color: Colors.white, size: 20),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                response.message ?? 'Failed to update limit',
+                                style: const TextStyle(color: Colors.white),
+                              ),
+                            ),
+                          ],
+                        ),
+                        backgroundColor: cs.error,
+                        behavior: SnackBarBehavior.floating,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    );
+                  }
+                }
+              } catch (e) {
+                setSheetState(() {
+                  isSaving = false;
+                  errorMessage = e.toString();
+                });
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Row(
+                        children: [
+                          const Icon(Icons.error_outline_rounded, color: Colors.white, size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              e.toString(),
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        ],
+                      ),
+                      backgroundColor: cs.error,
+                      behavior: SnackBarBehavior.floating,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                  );
+                }
+              }
+            }
+
+            final presets = [100, 250, 500, 1000, 2000];
+
+            return Container(
+              decoration: BoxDecoration(
+                color: isDark ? cs.surface : Colors.white,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: .2),
+                    blurRadius: 20,
+                    offset: const Offset(0, -4),
+                  ),
+                ],
+              ),
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: EdgeInsets.only(bottom: viewInsets.bottom),
+                  child: SingleChildScrollView(
+                    physics: const ClampingScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Center(
+                          child: Container(
+                            width: 36,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: cs.onSurface.withValues(alpha: .2),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: cs.primary.withValues(alpha: .12),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Icon(Icons.speed_rounded, color: cs.primary, size: 24),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Max Like Back Limit',
+                                    style: getBoldStyle(fontSize: 18, color: cs.onSurface),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Daily limit for automatic like-backs',
+                                    style: getRegularStyle(fontSize: 12, color: cs.onSurface.withValues(alpha: .5)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            IconButton(
+                              icon: Icon(Icons.close_rounded, color: cs.onSurface.withValues(alpha: .5)),
+                              onPressed: () => Navigator.pop(sheetContext),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                        Text(
+                          'Set Limit (Positive integer >= 1)',
+                          style: getSemiBoldStyle(fontSize: 13, color: cs.onSurface.withValues(alpha: .7)),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: textController,
+                          keyboardType: TextInputType.number,
+                          autofocus: true,
+                          enabled: !isSaving,
+                          style: getSemiBoldStyle(fontSize: 18, color: cs.onSurface),
+                          decoration: InputDecoration(
+                            hintText: 'Enter limit (e.g. 500)',
+                            hintStyle: getRegularStyle(fontSize: 14, color: cs.onSurface.withValues(alpha: .3)),
+                            filled: true,
+                            fillColor: isDark ? cs.onSurface.withValues(alpha: .06) : cs.primaryContainer,
+                            prefixIcon: Icon(Icons.thumb_up_alt_rounded, color: cs.primary, size: 20),
+                            suffixIcon: textController.text.isNotEmpty
+                                ? IconButton(
+                                    icon: const Icon(Icons.clear_rounded, size: 18),
+                                    onPressed: () {
+                                      textController.clear();
+                                      setSheetState(() {});
+                                    },
+                                  )
+                                : null,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(color: cs.primary.withValues(alpha: .2)),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(color: cs.primary.withValues(alpha: .15)),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(color: cs.primary, width: 2),
+                            ),
+                          ),
+                          onChanged: (_) => setSheetState(() {
+                            errorMessage = null;
+                          }),
+                        ),
+                        if (errorMessage != null) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Icon(Icons.error_outline_rounded, size: 14, color: cs.error),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  errorMessage!,
+                                  style: getRegularStyle(fontSize: 12, color: cs.error),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                        const SizedBox(height: 14),
+                        Text(
+                          'Quick presets',
+                          style: getMediumStyle(fontSize: 12, color: cs.onSurface.withValues(alpha: .4)),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 6,
+                          children: presets.map((preset) {
+                            final isSelected = textController.text == preset.toString();
+                            return ActionChip(
+                              label: Text(
+                                '$preset',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                                  color: isSelected ? cs.primary : cs.onSurface.withValues(alpha: .7),
+                                ),
+                              ),
+                              backgroundColor: isSelected
+                                  ? cs.primary.withValues(alpha: .15)
+                                  : (isDark ? cs.onSurface.withValues(alpha: .06) : cs.surfaceContainerHighest),
+                              side: BorderSide(
+                                color: isSelected ? cs.primary : Colors.transparent,
+                              ),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              onPressed: isSaving
+                                  ? null
+                                  : () {
+                                      textController.text = preset.toString();
+                                      setSheetState(() {
+                                        errorMessage = null;
+                                      });
+                                    },
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 22),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: isSaving ? null : () => Navigator.pop(sheetContext),
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  side: BorderSide(color: cs.onSurface.withValues(alpha: .2)),
+                                ),
+                                child: Text(
+                                  'Cancel',
+                                  style: getMediumStyle(fontSize: 14, color: cs.onSurface.withValues(alpha: .7)),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: isSaving ? null : saveLimit,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: cs.primary,
+                                  foregroundColor: cs.onPrimary,
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  elevation: 0,
+                                ),
+                                child: isSaving
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : Text(
+                                        'Save Limit',
+                                        style: getBoldStyle(fontSize: 14, color: cs.onPrimary),
+                                      ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -302,6 +682,83 @@ class _SectionCard extends StatelessWidget {
         border: Border.all(color: cs.primary.withValues(alpha: isDark ? .08 : .04)),
       ),
       child: child,
+    );
+  }
+}
+
+// ── Value settings tile ──
+class _SettingsValueTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String? subtitle;
+  final String value;
+  final ColorScheme cs;
+  final VoidCallback onTap;
+
+  const _SettingsValueTile({
+    required this.icon,
+    required this.label,
+    this.subtitle,
+    required this.value,
+    required this.cs,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: cs.primary.withValues(alpha: .1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, size: 20, color: cs.primary),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: getMediumStyle(fontSize: 14, color: cs.onSurface)),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle!,
+                      style: getRegularStyle(fontSize: 11, color: cs.onSurface.withValues(alpha: .45)),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: cs.primary.withValues(alpha: .1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: cs.primary.withValues(alpha: .2)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    value,
+                    style: getBoldStyle(fontSize: 13, color: cs.primary),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(Icons.edit_rounded, size: 13, color: cs.primary),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

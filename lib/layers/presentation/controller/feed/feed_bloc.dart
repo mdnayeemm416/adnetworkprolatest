@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:adnetwork/core/services/link_queue_manager.dart';
+import 'package:adnetwork/core/services/mobile_config_manager.dart';
 import 'package:adnetwork/layers/data/model/link_model.dart';
 import 'package:adnetwork/layers/data/repo/remote/link_repository.dart';
 import 'package:equatable/equatable.dart';
@@ -17,6 +18,7 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
   Timer? _likeCooldownTimer;
   Timer? _pageWaitTimer;
   Timer? _nextCooldownTimer;
+  Timer? _feedBreakCooldownTimer;
   StreamSubscription<String>? _queueCompletionSub;
   StreamSubscription<void>? _allLinksCompletedSub;
   StreamSubscription<List<LinkModel>>? _feedRefreshSub;
@@ -29,10 +31,15 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     on<RefreshFeed>(_onRefreshFeed);
     on<LoadMoreFeed>(_onLoadMore);
     on<ChangeFeedPage>(_onChangePage);
+    on<CheckFeedCooldowns>(_onCheckFeedCooldowns);
     on<_TickLikeCooldown>(_onTickLikeCooldown);
     on<_TickPageWait>(_onTickPageWait);
     on<_TickNextCooldown>(_onTickNextCooldown);
+    on<_TickFeedBreakCooldown>(_onTickFeedBreakCooldown);
     on<_UpdateLinksFromQueue>(_onUpdateLinksFromQueue);
+
+    // Immediately sync cooldowns upon bloc creation
+    add(const CheckFeedCooldowns());
 
     // Listen for completed link viewings from the WebView queue
     // and fire the like API at that point.
@@ -55,6 +62,65 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     });
   }
 
+  /// Synchronize cooldowns against persistent storage and current wall-clock time.
+  Future<void> _syncCooldowns(Emitter<FeedState> emit) async {
+    final prefs = await SharedPreferences.getInstance();
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    // 1. Next button cooldown
+    final nextBlockedUntil = prefs.getInt('feed_next_blocked_until') ?? 0;
+    if (nextBlockedUntil > now) {
+      final remaining = ((nextBlockedUntil - now) / 1000).ceil();
+      emit(state.copyWith(nextCooldownSeconds: remaining));
+      _startNextCooldown();
+    } else {
+      _nextCooldownTimer?.cancel();
+      if (nextBlockedUntil > 0) {
+        await prefs.setInt('feed_next_blocked_until', 0);
+      }
+      if (state.nextCooldownSeconds != 0) {
+        emit(state.copyWith(nextCooldownSeconds: 0));
+      }
+    }
+
+    // 2. Feed break cooldown
+    final breakBlockedUntil = prefs.getInt('feed_break_blocked_until') ?? 0;
+    final savedLikes = prefs.getInt('feed_break_likes_count') ?? 0;
+
+    if (breakBlockedUntil > now) {
+      final remaining = ((breakBlockedUntil - now) / 1000).ceil();
+      LinkQueueManager.instance.isFeedBreakActive = true;
+      emit(state.copyWith(
+        feedBreakCooldownSeconds: remaining,
+        feedBreakLikesCount: savedLikes,
+      ));
+      _startFeedBreakCooldown();
+    } else {
+      _feedBreakCooldownTimer?.cancel();
+      LinkQueueManager.instance.isFeedBreakActive = false;
+      if (breakBlockedUntil > 0) {
+        await prefs.setInt('feed_break_blocked_until', 0);
+        await prefs.setInt('feed_break_likes_count', 0);
+        emit(state.copyWith(
+          feedBreakCooldownSeconds: 0,
+          feedBreakLikesCount: 0,
+        ));
+      } else {
+        emit(state.copyWith(
+          feedBreakCooldownSeconds: 0,
+          feedBreakLikesCount: savedLikes,
+        ));
+      }
+    }
+  }
+
+  Future<void> _onCheckFeedCooldowns(
+    CheckFeedCooldowns event,
+    Emitter<FeedState> emit,
+  ) async {
+    await _syncCooldowns(emit);
+  }
+
   /// Called when a link has been fully viewed in the WebView.
   /// Now mark it liked in the state and call the like API.
   void _onLinkViewed(String linkId) {
@@ -74,17 +140,8 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
   // ── Load Feed ──
 
   Future<void> _onLoadFeed(LoadFeed event, Emitter<FeedState> emit) async {
-    // Check for existing cooldown in cache on first load
-    if (state.status == FeedStatus.initial) {
-      final prefs = await SharedPreferences.getInstance();
-      final blockedUntil = prefs.getInt('feed_next_blocked_until') ?? 0;
-      final now = DateTime.now().millisecondsSinceEpoch;
-      if (blockedUntil > now) {
-        final remaining = ((blockedUntil - now) / 1000).ceil();
-        emit(state.copyWith(nextCooldownSeconds: remaining));
-        _startNextCooldown();
-      }
-    }
+    // Check for existing cooldowns in cache
+    await _syncCooldowns(emit);
 
     emit(state.copyWith(status: FeedStatus.loading));
 
@@ -127,7 +184,7 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     }
   }
 
-  // ── Toggle Like (with cooldown) ──
+  // ── Toggle Like (with cooldown and feed break limit) ──
 
   Future<void> _onToggleLike(ToggleLike event, Emitter<FeedState> emit) async {
     final links = List<LinkModel>.from(state.links);
@@ -143,16 +200,51 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     final newStreak = state.likeStreak + 1;
     final int cooldown = (newStreak % 4 == 0) ? 4 : 1;
 
-    emit(
-      state.copyWith(
-        links: links,
-        likeStreak: newStreak,
-        likeCooldownSeconds: cooldown,
-      ),
-    );
+    // Check feed break limits from mobile config
+    final config = MobileConfigManager.instance.config;
+    final breakLimit = config.breakTimeLinkCountInt;
+    final newBreakLikes = state.feedBreakLikesCount + 1;
+    final prefs = await SharedPreferences.getInstance();
 
-    // Start the cooldown countdown timer
-    _startLikeCooldown();
+    if (newBreakLikes >= breakLimit) {
+      // User reached break_time_link_count likes! Trigger break time.
+      final breakMinutes = config.feedBreakTimeMinutes;
+      final breakSecs = breakMinutes * 60;
+      final blockedUntil =
+          DateTime.now().millisecondsSinceEpoch + (breakSecs * 1000);
+
+      await prefs.setInt('feed_break_blocked_until', blockedUntil);
+      await prefs.setInt('feed_break_likes_count', newBreakLikes);
+
+      LinkQueueManager.instance.isFeedBreakActive = true;
+      LinkQueueManager.instance.requestPauseAutoPlay();
+      LinkQueueManager.instance.cancelViewing(completeLike: false);
+
+      emit(
+        state.copyWith(
+          links: links,
+          likeStreak: newStreak,
+          likeCooldownSeconds: cooldown,
+          feedBreakLikesCount: newBreakLikes,
+          feedBreakCooldownSeconds: breakSecs,
+        ),
+      );
+
+      _startFeedBreakCooldown();
+    } else {
+      await prefs.setInt('feed_break_likes_count', newBreakLikes);
+      emit(
+        state.copyWith(
+          links: links,
+          likeStreak: newStreak,
+          likeCooldownSeconds: cooldown,
+          feedBreakLikesCount: newBreakLikes,
+        ),
+      );
+
+      // Start the cooldown countdown timer
+      _startLikeCooldown();
+    }
   }
 
   // ── Like Cooldown Timer ──
@@ -181,6 +273,7 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     RefreshFeed event,
     Emitter<FeedState> emit,
   ) async {
+    await _syncCooldowns(emit);
     _isRefresh = true;
     _pendingPage = state.currentPage;
     emit(state.copyWith(pageWaitSeconds: 4));
@@ -232,13 +325,58 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     );
   }
 
-  void _onTickNextCooldown(_TickNextCooldown event, Emitter<FeedState> emit) {
-    final remaining = state.nextCooldownSeconds - 1;
-    if (remaining <= 0) {
+  Future<void> _onTickNextCooldown(_TickNextCooldown event, Emitter<FeedState> emit) async {
+    final prefs = await SharedPreferences.getInstance();
+    final nextBlockedUntil = prefs.getInt('feed_next_blocked_until') ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    if (nextBlockedUntil <= now) {
       _nextCooldownTimer?.cancel();
+      if (nextBlockedUntil > 0) {
+        await prefs.setInt('feed_next_blocked_until', 0);
+      }
       emit(state.copyWith(nextCooldownSeconds: 0));
     } else {
+      final remaining = ((nextBlockedUntil - now) / 1000).ceil();
       emit(state.copyWith(nextCooldownSeconds: remaining));
+    }
+  }
+
+  // ── Feed Break Cooldown Timer ──
+
+  void _startFeedBreakCooldown() {
+    _feedBreakCooldownTimer?.cancel();
+    _feedBreakCooldownTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => add(const _TickFeedBreakCooldown()),
+    );
+  }
+
+  Future<void> _onTickFeedBreakCooldown(
+    _TickFeedBreakCooldown event,
+    Emitter<FeedState> emit,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    final breakBlockedUntil = prefs.getInt('feed_break_blocked_until') ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    if (breakBlockedUntil <= now) {
+      _feedBreakCooldownTimer?.cancel();
+      LinkQueueManager.instance.isFeedBreakActive = false;
+
+      // Break ended — reset like value in cache and state
+      await prefs.setInt('feed_break_blocked_until', 0);
+      await prefs.setInt('feed_break_likes_count', 0);
+
+      emit(
+        state.copyWith(
+          feedBreakCooldownSeconds: 0,
+          feedBreakLikesCount: 0,
+        ),
+      );
+    } else {
+      final remaining = ((breakBlockedUntil - now) / 1000).ceil();
+      emit(state.copyWith(feedBreakCooldownSeconds: remaining));
     }
   }
 
@@ -359,6 +497,7 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     _likeCooldownTimer?.cancel();
     _pageWaitTimer?.cancel();
     _nextCooldownTimer?.cancel();
+    _feedBreakCooldownTimer?.cancel();
     _queueCompletionSub?.cancel();
     _allLinksCompletedSub?.cancel();
     _feedRefreshSub?.cancel();

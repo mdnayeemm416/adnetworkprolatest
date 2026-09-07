@@ -7,10 +7,12 @@ class MobileConfig {
   final String adsHeight;
   final String adsWidth;
   final String allowDns;
+  final String breakTimeLinkCount;
   final String campaignMust;
   final String campaignSeconds;
   final String campaignSecondsMax;
   final String campaignSecondsMin;
+  final String feedBreakTime;
   final String maxAdsTime;
   final String minAdsTime;
   final String useDeviceResolution;
@@ -21,10 +23,12 @@ class MobileConfig {
     required this.adsHeight,
     required this.adsWidth,
     required this.allowDns,
+    required this.breakTimeLinkCount,
     required this.campaignMust,
     required this.campaignSeconds,
     required this.campaignSecondsMax,
     required this.campaignSecondsMin,
+    required this.feedBreakTime,
     required this.maxAdsTime,
     required this.minAdsTime,
     required this.useDeviceResolution,
@@ -36,16 +40,21 @@ class MobileConfig {
     adsHeight: "256",
     adsWidth: "256",
     allowDns: "0",
+    breakTimeLinkCount: "100",
     campaignMust: "1",
     campaignSeconds: "20",
     campaignSecondsMax: "25",
     campaignSecondsMin: "15",
+    feedBreakTime: "30",
     maxAdsTime: "15",
     minAdsTime: "10",
     useDeviceResolution: "1",
     maintenanceMode: "0",
     maintenanceMessage: "System is currently under maintenance. Please try again later.",
   );
+
+  int get breakTimeLinkCountInt => int.tryParse(breakTimeLinkCount) ?? 100;
+  int get feedBreakTimeMinutes => int.tryParse(feedBreakTime) ?? 30;
 
   factory MobileConfig.fromJson(Map<String, dynamic> json) {
     // If the json has a "data" field, look inside it; otherwise parse the root object.
@@ -57,10 +66,12 @@ class MobileConfig {
       adsHeight: data['ads_height']?.toString() ?? "256",
       adsWidth: data['ads_width']?.toString() ?? "256",
       allowDns: data['allow_dns']?.toString() ?? "0",
+      breakTimeLinkCount: data['break_time_link_count']?.toString() ?? "100",
       campaignMust: data['campaign_must']?.toString() ?? "1",
       campaignSeconds: data['campaign_seconds']?.toString() ?? "20",
       campaignSecondsMax: data['campaign_seconds_max']?.toString() ?? "25",
       campaignSecondsMin: data['campaign_seconds_min']?.toString() ?? "15",
+      feedBreakTime: data['feed_break_time']?.toString() ?? "30",
       maxAdsTime: data['max_ads_time']?.toString() ?? "15",
       minAdsTime: data['min_ads_time']?.toString() ?? "10",
       useDeviceResolution: data['use_device_resolution']?.toString() ?? "1",
@@ -74,10 +85,12 @@ class MobileConfig {
       'ads_height': adsHeight,
       'ads_width': adsWidth,
       'allow_dns': allowDns,
+      'break_time_link_count': breakTimeLinkCount,
       'campaign_must': campaignMust,
       'campaign_seconds': campaignSeconds,
       'campaign_seconds_max': campaignSecondsMax,
       'campaign_seconds_min': campaignSecondsMin,
+      'feed_break_time': feedBreakTime,
       'max_ads_time': maxAdsTime,
       'min_ads_time': minAdsTime,
       'use_device_resolution': useDeviceResolution,

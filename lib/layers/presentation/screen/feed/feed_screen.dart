@@ -20,13 +20,13 @@ import 'package:adnetwork/layers/dto/api_response.dart';
 import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:adnetwork/core/services/link_queue_manager.dart';
+import 'package:adnetwork/core/services/mobile_config_manager.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:pip/pip.dart';
 
-final ValueNotifier<bool> isPipModeNotifier = ValueNotifier(false);
 final ValueNotifier<double> webViewOverlayOpacityNotifier = ValueNotifier(0.0);
 
 class FeedScreen extends StatefulWidget {
@@ -37,7 +37,7 @@ class FeedScreen extends StatefulWidget {
   State<FeedScreen> createState() => _FeedScreenState();
 }
 
-class _FeedScreenState extends State<FeedScreen> with RouteAware {
+class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBindingObserver {
   late ScrollController _scrollController;
   StreamSubscription<String>? _completedLinkSub;
   StreamSubscription<void>? _autoPlayPauseSub;
@@ -50,6 +50,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _scrollController = ScrollController();
     _initPip();
     _loadAutoLikeStatus();
@@ -73,11 +74,19 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
+        context.read<FeedBloc>().add(const CheckFeedCooldowns());
         if (widget.isActive) {
           _checkAutoplayPersistentStatus();
         }
       }
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      context.read<FeedBloc>().add(const CheckFeedCooldowns());
+    }
   }
 
   @override
@@ -89,6 +98,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
   @override
   void didPopNext() {
     if (mounted) {
+      context.read<FeedBloc>().add(const CheckFeedCooldowns());
       context.read<FeedBloc>().add(const RefreshFeed());
       context.read<NoticeBloc>().add(const LoadNotices());
       context.read<ProfileBloc>().add(const LoadProfileStats());
@@ -149,6 +159,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     routeObserver.unsubscribe(this);
     _completedLinkSub?.cancel();
     _autoPlayPauseSub?.cancel();
@@ -159,6 +170,18 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
   }
 
   void _toggleAutoPlay(FeedState state) {
+    if (!_isAutoScrolling && state.feedBreakCooldownSeconds > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text(
+            'ব্রেক টাইম চলছে। বিরতি শেষ হলে অটো প্লে চালু করতে পারবেন।',
+          ),
+          backgroundColor: Colors.orange.shade800,
+        ),
+      );
+      return;
+    }
+
     setState(() {
       _isAutoScrolling = !_isAutoScrolling;
       TokenStorage.instance.saveFeedAutoplay(_isAutoScrolling ? 1 : 0);
@@ -215,10 +238,11 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
     final feedBloc = context.read<FeedBloc>();
     final state = feedBloc.state;
 
-    // Check if feed is loading, waiting for page, in cooldown, or locked
+    // Check if feed is loading, waiting for page, in cooldown, in break time, or locked
     if (state.status == FeedStatus.loading ||
         state.pageWaitSeconds > 0 ||
         state.nextCooldownSeconds > 0 ||
+        state.feedBreakCooldownSeconds > 0 ||
         state.isLocked) {
       return;
     }
@@ -264,12 +288,110 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
     }
   }
 
+  Widget _buildFeedBreakCard(BuildContext context, FeedState fbState) {
+    final cs = Theme.of(context).colorScheme;
+    final config = MobileConfigManager.instance.config;
+    final hours = fbState.feedBreakCooldownSeconds ~/ 3600;
+    final mins = (fbState.feedBreakCooldownSeconds % 3600) ~/ 60;
+    final secs = fbState.feedBreakCooldownSeconds % 60;
+    final timeStr = hours > 0
+        ? '${hours.toString().padLeft(2, '0')}:${mins.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}'
+        : '${mins.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+
+    final totalBreakSecs = (config.feedBreakTimeMinutes * 60).clamp(1, 86400);
+    final progress =
+        (fbState.feedBreakCooldownSeconds / totalBreakSecs).clamp(0.0, 1.0);
+
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 28),
+        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 36),
+        decoration: BoxDecoration(
+          color: cs.primaryContainer.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(
+            color: cs.primary.withValues(alpha: 0.2),
+            width: 1.5,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: cs.primary.withValues(alpha: 0.08),
+              blurRadius: 28,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(22),
+              decoration: BoxDecoration(
+                color: cs.primary.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.coffee_rounded,
+                color: cs.primary,
+                size: 52,
+              ),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              timeStr,
+              style: getBoldStyle(fontSize: 42, color: cs.primary),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'ব্রেক টাইম চলছে',
+              style: getBoldStyle(fontSize: 20, color: cs.onSurface),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'আপনি ${config.breakTimeLinkCount} টি লাইক সম্পন্ন করেছেন।\n${config.feedBreakTime} মিনিট বিরতি চলছে।',
+              style: getMediumStyle(
+                fontSize: 14,
+                color: cs.onSurface.withValues(alpha: 0.75),
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: SizedBox(
+                width: 180,
+                child: LinearProgressIndicator(
+                  value: 1.0 - progress,
+                  minHeight: 8,
+                  backgroundColor: cs.primary.withValues(alpha: 0.15),
+                  valueColor: AlwaysStoppedAnimation<Color>(cs.primary),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'বিরতি শেষ হলে আপনি আবার লাইক দিতে পারবেন 🙏',
+              style: getRegularStyle(
+                fontSize: 13,
+                color: cs.onSurface.withValues(alpha: 0.55),
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildPageProgressCard(BuildContext context, FeedState state) {
     final cs = Theme.of(context).colorScheme;
     final total = state.links.length;
     final completed = state.links.where((l) => l.isLiked).length;
     final double progress =
         total > 0 ? (completed / total).clamp(0.0, 1.0) : 0.0;
+    final breakLimit = MobileConfigManager.instance.config.breakTimeLinkCountInt;
+    final breakLikes = state.feedBreakLikesCount;
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 12),
@@ -389,6 +511,43 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
               ),
             ),
           ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.coffee_outlined,
+                      size: 14,
+                      color: cs.primary,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Break Progress:',
+                      style: getMediumStyle(
+                        fontSize: 11,
+                        color: cs.onSurface.withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ],
+                ),
+                Text(
+                  '$breakLikes / $breakLimit likes',
+                  style: getBoldStyle(
+                    fontSize: 11,
+                    color: cs.primary,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -406,12 +565,14 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
       listenWhen: (prev, curr) =>
           prev.status != curr.status ||
           prev.currentPage != curr.currentPage ||
-          prev.pageWaitSeconds != curr.pageWaitSeconds,
+          prev.pageWaitSeconds != curr.pageWaitSeconds ||
+          prev.feedBreakCooldownSeconds != curr.feedBreakCooldownSeconds,
       listener: (context, state) {
         if (_isAutoScrolling &&
             state.status == FeedStatus.loaded &&
             state.pageWaitSeconds == 0 &&
             state.nextCooldownSeconds == 0 &&
+            state.feedBreakCooldownSeconds == 0 &&
             !LinkQueueManager.instance.isViewing) {
           Future.delayed(const Duration(milliseconds: 500), () {
             if (mounted && _isAutoScrolling) {
@@ -426,13 +587,23 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
           prev.isLocked != curr.isLocked ||
           // Show/hide like-button cooldown countdown on cards
           prev.likeCooldownSeconds != curr.likeCooldownSeconds ||
-          // Switch between the three top-level views
+          // Switch between the top-level views
+          (prev.feedBreakCooldownSeconds > 0) != (curr.feedBreakCooldownSeconds > 0) ||
           (prev.nextCooldownSeconds > 0) != (curr.nextCooldownSeconds > 0) ||
-          (prev.pageWaitSeconds > 0) != (curr.pageWaitSeconds > 0),
+          (prev.pageWaitSeconds > 0) != (curr.pageWaitSeconds > 0) ||
+          prev.feedBreakLikesCount != curr.feedBreakLikesCount,
       builder: (context, state) {
         Widget content;
-        // ── Next Button Cooldown Card (5m countdown) ──
-        if (state.nextCooldownSeconds > 0) {
+        // ── Feed Break Time Cooldown Card ──
+        if (state.feedBreakCooldownSeconds > 0) {
+          content = BlocBuilder<FeedBloc, FeedState>(
+            buildWhen: (p, c) =>
+                p.feedBreakCooldownSeconds != c.feedBreakCooldownSeconds,
+            builder: (context, fbState) {
+              return _buildFeedBreakCard(context, fbState);
+            },
+          );
+        } else if (state.nextCooldownSeconds > 0) {
           // Wrap in its own scoped BlocBuilder so only the time text
           // rebuilds every second — the feed list is untouched.
           content = BlocBuilder<FeedBloc, FeedState>(
@@ -846,6 +1017,17 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
                           link: link,
                           likeCooldownSeconds: state.likeCooldownSeconds,
                           onLike: () {
+                            if (state.feedBreakCooldownSeconds > 0) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: const Text(
+                                    'ব্রেক টাইম চলছে। বিরতি শেষ হলে লাইক দিতে পারবেন।',
+                                  ),
+                                  backgroundColor: Colors.orange.shade800,
+                                ),
+                              );
+                              return;
+                            }
                             if (link.isLiked) return;
                             if (link.url != null && link.url!.isNotEmpty) {
                               LinkQueueManager.instance.startViewing(
@@ -1226,6 +1408,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware {
           );
         }
         final showFab =
+            state.feedBreakCooldownSeconds <= 0 &&
             state.nextCooldownSeconds <= 0 &&
             state.pageWaitSeconds <= 0 &&
             state.status != FeedStatus.loading &&

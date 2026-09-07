@@ -122,6 +122,7 @@ class HomePageState extends State<HomePage> {
     if (_descendantContext != null) {
       if (index == 0) {
         final feedBloc = _descendantContext!.read<FeedBloc>();
+        feedBloc.add(const CheckFeedCooldowns());
         if (feedBloc.state.status == FeedStatus.initial) {
           feedBloc.add(const LoadFeed());
         }
@@ -352,9 +353,24 @@ class HomePageState extends State<HomePage> {
       child: Builder(
         builder: (context) {
           _descendantContext = context;
-          return Scaffold(
-            backgroundColor: cs.surface,
-            drawer: Drawer(
+          return ValueListenableBuilder<bool>(
+            valueListenable: isPipModeNotifier,
+            builder: (context, isPip, _) {
+              if (isPip) {
+                return Scaffold(
+                  backgroundColor: const Color(0xFF0F172A),
+                  body: LinkQueueOverlay(
+                    key: const ValueKey('active_link_queue_overlay_pip'),
+                    isPipMode: true,
+                    onPauseAutoPlay: () {
+                      LinkQueueManager.instance.requestPauseAutoPlay();
+                    },
+                  ),
+                );
+              }
+              return Scaffold(
+                backgroundColor: cs.surface,
+                drawer: Drawer(
               backgroundColor: cs.surface,
               child: SafeArea(
                 child: BlocBuilder<ProfileBloc, ProfileState>(
@@ -659,44 +675,41 @@ class HomePageState extends State<HomePage> {
               bottom: false,
               left: false,
               right: false,
-              child: ValueListenableBuilder<bool>(
-                valueListenable: isPipModeNotifier,
-                builder: (context, isPip, child) {
-                  return Stack(
-                    children: [
-                      // Offstage keeps the feed screen, BLoC subscriptions, and AutoPlay engine
-                      // alive in the background while in PIP mode.
-                      Offstage(
-                        offstage: isPip,
-                        child: SafeArea(
-                          child: Column(
-                            children: [
-                              // Main content
-                              Expanded(
-                                child: IndexedStack(
-                                  index: _idx,
-                                  children: pages,
-                                ),
-                              ),
-                            ],
+              child: Stack(
+                children: [
+                  // Offstage keeps the feed screen, BLoC subscriptions, and AutoPlay engine
+                  // alive in the background while in PIP mode.
+                  Offstage(
+                    offstage: isPip,
+                    child: SafeArea(
+                      child: Column(
+                        children: [
+                          // Main content
+                          Expanded(
+                            child: IndexedStack(
+                              index: _idx,
+                              children: pages,
+                            ),
                           ),
-                        ),
+                        ],
                       ),
-                      Positioned.fill(
-                        child: LinkQueueOverlay(
-                          key: const ValueKey('active_link_queue_overlay'),
-                          isPipMode: isPip,
-                          onPauseAutoPlay: () {
-                            LinkQueueManager.instance.requestPauseAutoPlay();
-                          },
-                        ),
-                      ),
-                    ],
-                  );
-                },
+                    ),
+                  ),
+                  Positioned.fill(
+                    child: LinkQueueOverlay(
+                      key: const ValueKey('active_link_queue_overlay'),
+                      isPipMode: isPip,
+                      onPauseAutoPlay: () {
+                        LinkQueueManager.instance.requestPauseAutoPlay();
+                      },
+                    ),
+                  ),
+                ],
               ),
             ),
           );
+        },
+      );
         },
       ),
     );

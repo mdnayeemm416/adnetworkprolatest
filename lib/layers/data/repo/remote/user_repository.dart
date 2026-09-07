@@ -41,6 +41,16 @@ class UserRepository {
     );
   }
 
+  /// PATCH /users/me/like-back-limit
+  Future<ApiResponse<dynamic>> updateMaxLikeBackLimit(int limit) async {
+    return _api.patch(
+      ApiEndpoints.likeBackLimit,
+      body: {
+        'limit': limit,
+      },
+    );
+  }
+
   /// GET /users/me/activity-stats
   Future<ApiResponse<ActivityStatsModel>> getActivityStats() async {
     return _api.get<ActivityStatsModel>(

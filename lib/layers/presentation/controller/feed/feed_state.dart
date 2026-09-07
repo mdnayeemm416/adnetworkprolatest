@@ -30,6 +30,12 @@ class FeedState extends Equatable {
   /// Campaign instruction banner message.
   final String? instruction;
 
+  /// Number of completed likes towards the break time limit (break_time_link_count).
+  final int feedBreakLikesCount;
+
+  /// Seconds remaining for the feed break time (feed_break_time in minutes * 60). (0 = no break).
+  final int feedBreakCooldownSeconds;
+
   const FeedState({
     this.status = FeedStatus.initial,
     this.links = const [],
@@ -43,6 +49,8 @@ class FeedState extends Equatable {
     this.nextCooldownSeconds = 0,
     this.isLocked = false,
     this.instruction,
+    this.feedBreakLikesCount = 0,
+    this.feedBreakCooldownSeconds = 0,
   });
 
   FeedState copyWith({
@@ -58,6 +66,8 @@ class FeedState extends Equatable {
     int? nextCooldownSeconds,
     bool? isLocked,
     String? instruction,
+    int? feedBreakLikesCount,
+    int? feedBreakCooldownSeconds,
   }) {
     return FeedState(
       status: status ?? this.status,
@@ -72,6 +82,9 @@ class FeedState extends Equatable {
       nextCooldownSeconds: nextCooldownSeconds ?? this.nextCooldownSeconds,
       isLocked: isLocked ?? this.isLocked,
       instruction: instruction ?? this.instruction,
+      feedBreakLikesCount: feedBreakLikesCount ?? this.feedBreakLikesCount,
+      feedBreakCooldownSeconds:
+          feedBreakCooldownSeconds ?? this.feedBreakCooldownSeconds,
     );
   }
 
@@ -89,5 +102,7 @@ class FeedState extends Equatable {
     nextCooldownSeconds,
     isLocked,
     instruction,
+    feedBreakLikesCount,
+    feedBreakCooldownSeconds,
   ];
 }
