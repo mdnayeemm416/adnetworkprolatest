@@ -285,6 +285,23 @@ class LinkQueueManager {
         removeFromQueue(linkId);
         _completedLinkController.add(linkId);
       }
+      if (isAutoPlay && !isFeedBreakActive) {
+        if (hasQueuedLinks) {
+          final next = peekNext();
+          if (next != null) {
+            startViewing(
+              url: next.url,
+              linkId: next.linkId,
+              pageIndex: pageIndex,
+              linkIndex: linkIndex,
+              totalLinks: totalLinks,
+              isAutoPlay: true,
+            );
+            return;
+          }
+        }
+        _fetchAndContinueAutoPlay(pageIndex);
+      }
       return;
     }
 

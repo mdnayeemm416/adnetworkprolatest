@@ -222,8 +222,7 @@ class _LoginScreenState extends State<LoginScreen>
               }
 
               context.read<ProfileBloc>().add(const LoadProfile());
-              TokenStorage.instance.saveFeedAutoplay(0);
-              TokenStorage.instance.saveCampaignAutoplay(0);
+              TokenStorage.instance.resetAutoplayFlagsOnLogin();
 
               final config = MobileConfigManager.instance.config;
               if (config.campaignMust == "1" || config.campaignMust == "1") {

@@ -49,6 +49,9 @@ class TokenStorage {
     await prefs.remove(_tokenKey);
     await prefs.remove(_userIdKey);
     await prefs.remove(_autoLikeEnabledKey);
+    await prefs.remove(_feedAutoplayKey);
+    await prefs.remove(_feedAutoplayResumeAfterBreakKey);
+    await prefs.remove(_campaignAutoplayKey);
     // Note: Deliberately not clearing _cachedEmailKey and _cachedPasswordKey here
     // so "Remember Me" persists across manual logouts if implemented,
     // but the prompt usually means they stay until unchecked.
@@ -105,6 +108,7 @@ class TokenStorage {
   }
 
   static const String _feedAutoplayKey = 'feed_autoplay_key';
+  static const String _feedAutoplayResumeAfterBreakKey = 'feed_autoplay_resume_after_break';
   static const String _campaignAutoplayKey = 'campaign_autoplay_key';
 
   /// Save feed autoplay status (1 for on, 0 for off)
@@ -119,6 +123,18 @@ class TokenStorage {
     return prefs.getInt(_feedAutoplayKey) ?? 0;
   }
 
+  /// Save whether feed autoplay was enabled before break time started
+  Future<void> saveFeedAutoplayResumeAfterBreak(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_feedAutoplayResumeAfterBreakKey, value);
+  }
+
+  /// Retrieve whether feed autoplay was enabled before break time started
+  Future<bool> getFeedAutoplayResumeAfterBreak() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_feedAutoplayResumeAfterBreakKey) ?? false;
+  }
+
   /// Save campaign autoplay status (1 for on, 0 for off)
   Future<void> saveCampaignAutoplay(int value) async {
     final prefs = await SharedPreferences.getInstance();
@@ -129,6 +145,14 @@ class TokenStorage {
   Future<int> getCampaignAutoplay() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getInt(_campaignAutoplayKey) ?? 0;
+  }
+
+  /// Reset all autoplay flags to disabled (off) upon user login
+  Future<void> resetAutoplayFlagsOnLogin() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_feedAutoplayKey, 0);
+    await prefs.setInt(_campaignAutoplayKey, 0);
+    await prefs.setBool(_feedAutoplayResumeAfterBreakKey, false);
   }
 
   /// Retrieves the existing device ID or generates a new persistent one if not present.

@@ -216,6 +216,11 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
       await prefs.setInt('feed_break_blocked_until', blockedUntil);
       await prefs.setInt('feed_break_likes_count', newBreakLikes);
 
+      final feedAutoplay = prefs.getInt('feed_autoplay_key') ?? 0;
+      if (feedAutoplay == 1) {
+        await prefs.setBool('feed_autoplay_resume_after_break', true);
+      }
+
       LinkQueueManager.instance.isFeedBreakActive = true;
       LinkQueueManager.instance.requestPauseAutoPlay();
       LinkQueueManager.instance.cancelViewing(completeLike: false);

@@ -46,6 +46,8 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
   bool _isAutoScrolling = false;
   final _pip = Pip();
   bool _isAutoLikeEnabled = false;
+  bool _wasAutoplayEnabledBeforeBreak = false;
+  int _lastFeedBreakCooldownSeconds = 0;
 
   @override
   void initState() {
@@ -55,6 +57,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
     _initPip();
     _loadAutoLikeStatus();
     _loadOverlayOpacity();
+    _loadAutoplayResumeStatus();
     // Keep screen awake while app is in foreground
     WakelockPlus.enable();
 
@@ -68,7 +71,9 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
     // Listen for pause requests from the WebView overlay (e.g. user closed or tapped pause)
     _autoPlayPauseSub = LinkQueueManager.instance.autoPlayPauseStream.listen((_) {
       if (mounted && _isAutoScrolling) {
-        _stopAutoplayTemporarily();
+        final isBreak = LinkQueueManager.instance.isFeedBreakActive ||
+            (context.read<FeedBloc>().state.feedBreakCooldownSeconds > 0);
+        _stopAutoplayTemporarily(isBreak: isBreak);
       }
     });
 
@@ -118,6 +123,15 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
     if (mounted) {
       setState(() {
         _isAutoLikeEnabled = enabled;
+      });
+    }
+  }
+
+  Future<void> _loadAutoplayResumeStatus() async {
+    final resume = await TokenStorage.instance.getFeedAutoplayResumeAfterBreak();
+    if (mounted && resume) {
+      setState(() {
+        _wasAutoplayEnabledBeforeBreak = true;
       });
     }
   }
@@ -188,18 +202,29 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
     });
 
     if (_isAutoScrolling) {
+      _wasAutoplayEnabledBeforeBreak = false;
+      TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(false);
       _processAutoPlay();
     } else {
+      _wasAutoplayEnabledBeforeBreak = false;
+      TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(false);
       LinkQueueManager.instance.cancelViewing(completeLike: false);
     }
   }
 
-  void _stopAutoplayTemporarily() {
+  void _stopAutoplayTemporarily({bool isBreak = false}) {
     if (_isAutoScrolling) {
+      if (isBreak) {
+        _wasAutoplayEnabledBeforeBreak = true;
+        TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(true);
+      } else {
+        _wasAutoplayEnabledBeforeBreak = false;
+        TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(false);
+        TokenStorage.instance.saveFeedAutoplay(0);
+      }
       setState(() {
         _isAutoScrolling = false;
       });
-      TokenStorage.instance.saveFeedAutoplay(0);
       LinkQueueManager.instance.cancelViewing(completeLike: false);
     }
   }
@@ -210,21 +235,88 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
     if (widget.isActive && !oldWidget.isActive) {
       _checkAutoplayPersistentStatus();
     } else if (!widget.isActive && oldWidget.isActive) {
-      _stopAutoplayTemporarily();
+      final isBreak = LinkQueueManager.instance.isFeedBreakActive ||
+          context.read<FeedBloc>().state.feedBreakCooldownSeconds > 0;
+      _stopAutoplayTemporarily(isBreak: isBreak);
+    }
+  }
+
+  Future<void> _handleBreakTimeEnded(FeedState state) async {
+    final resumeAfterBreak =
+        await TokenStorage.instance.getFeedAutoplayResumeAfterBreak();
+    final shouldResume = _wasAutoplayEnabledBeforeBreak || resumeAfterBreak;
+
+    debugPrint('[FeedScreen] ☕ Break time ended. Should resume autoplay: $shouldResume');
+
+    _wasAutoplayEnabledBeforeBreak = false;
+    await TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(false);
+
+    if (shouldResume && mounted) {
+      await TokenStorage.instance.saveFeedAutoplay(1);
+      setState(() {
+        _isAutoScrolling = true;
+      });
+
+      // Ensure Hive queue has links if current state has unliked ones
+      if (!LinkQueueManager.instance.hasQueuedLinks) {
+        final unliked = state.links.where((l) => !l.isLiked).toList();
+        if (unliked.isNotEmpty) {
+          await LinkQueueManager.instance.populateQueue(state.links);
+        }
+      }
+
+      Future.delayed(const Duration(milliseconds: 600), () {
+        if (mounted && _isAutoScrolling) {
+          _processAutoPlay();
+        }
+      });
     }
   }
 
   Future<void> _checkAutoplayPersistentStatus() async {
+    if (!mounted) return;
+    final feedBloc = context.read<FeedBloc>();
+    final state = feedBloc.state;
+
+    final resumeAfterBreak =
+        await TokenStorage.instance.getFeedAutoplayResumeAfterBreak();
+    final wasEnabledBefore = _wasAutoplayEnabledBeforeBreak || resumeAfterBreak;
+
+    // If break has ended and autoplay was active before break, resume it
+    if (state.feedBreakCooldownSeconds <= 0 && wasEnabledBefore) {
+      await _handleBreakTimeEnded(state);
+      return;
+    }
+
+    // If still in break time, do not enable autoplay yet, but remember the intent
+    if (state.feedBreakCooldownSeconds > 0) {
+      _lastFeedBreakCooldownSeconds = state.feedBreakCooldownSeconds;
+      if (wasEnabledBefore) {
+        _wasAutoplayEnabledBeforeBreak = true;
+        await TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(true);
+      }
+      if (_isAutoScrolling) {
+        setState(() {
+          _isAutoScrolling = false;
+        });
+      }
+      return;
+    }
+
     final autoplayVal = await TokenStorage.instance.getFeedAutoplay();
     if (autoplayVal == 1) {
-      if (mounted && !_isAutoScrolling) {
-        final feedBloc = context.read<FeedBloc>();
-        _toggleAutoPlay(feedBloc.state);
+      if (!_isAutoScrolling) {
+        setState(() {
+          _isAutoScrolling = true;
+        });
+        _processAutoPlay();
       }
     } else {
-      if (mounted && _isAutoScrolling) {
-        final feedBloc = context.read<FeedBloc>();
-        _toggleAutoPlay(feedBloc.state);
+      if (_isAutoScrolling) {
+        setState(() {
+          _isAutoScrolling = false;
+        });
+        LinkQueueManager.instance.cancelViewing(completeLike: false);
       }
     }
   }
@@ -371,7 +463,9 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
             ),
             const SizedBox(height: 16),
             Text(
-              'বিরতি শেষ হলে আপনি আবার লাইক দিতে পারবেন 🙏',
+              _wasAutoplayEnabledBeforeBreak
+                  ? 'বিরতি শেষ হলে অটো প্লে স্বয়ংক্রিয়ভাবে চালু হবে 🙏'
+                  : 'বিরতি শেষ হলে আপনি আবার লাইক দিতে পারবেন 🙏',
               style: getRegularStyle(
                 fontSize: 13,
                 color: cs.onSurface.withValues(alpha: 0.55),
@@ -568,6 +662,28 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
           prev.pageWaitSeconds != curr.pageWaitSeconds ||
           prev.feedBreakCooldownSeconds != curr.feedBreakCooldownSeconds,
       listener: (context, state) {
+        // Track whether break time was active and has just ended
+        final breakJustEnded =
+            _lastFeedBreakCooldownSeconds > 0 && state.feedBreakCooldownSeconds == 0;
+
+        // If break just started while autoplaying, record intent to resume after break
+        if (_lastFeedBreakCooldownSeconds == 0 && state.feedBreakCooldownSeconds > 0) {
+          if (_isAutoScrolling) {
+            _wasAutoplayEnabledBeforeBreak = true;
+            TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(true);
+            setState(() {
+              _isAutoScrolling = false;
+            });
+          }
+        }
+
+        _lastFeedBreakCooldownSeconds = state.feedBreakCooldownSeconds;
+
+        if (breakJustEnded) {
+          _handleBreakTimeEnded(state);
+          return;
+        }
+
         if (_isAutoScrolling &&
             state.status == FeedStatus.loaded &&
             state.pageWaitSeconds == 0 &&

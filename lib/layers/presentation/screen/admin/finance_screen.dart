@@ -1,4 +1,5 @@
 import 'package:adnetwork/config/theme/styles_manager.dart';
+import 'package:adnetwork/core/services/api_client.dart';
 import 'package:adnetwork/layers/data/model/finance_summary_model.dart';
 import 'package:adnetwork/layers/data/model/finance_daily_detail_model.dart';
 import 'package:adnetwork/layers/data/repo/remote/admin_repository.dart';
@@ -304,8 +305,8 @@ class _FinanceScreenBodyState extends State<_FinanceScreenBody> {
             _buildRevenueHeaderCard(summary.stats, cs, isDark),
             const SizedBox(height: 16),
 
-            // _buildSubscriberSection(summary.stats, cs, isDark),
-            // const SizedBox(height: 16),
+            _buildSubscriberSection(summary.stats, cs, isDark),
+            const SizedBox(height: 16),
             _buildBreakdownSection(summary.stats, cs, isDark),
             const SizedBox(height: 16),
 
@@ -1461,13 +1462,101 @@ class _LogPayoutDialog extends StatefulWidget {
 
 class _LogPayoutDialogState extends State<_LogPayoutDialog> {
   final _formKey = GlobalKey<FormState>();
+  final _subscribersCtrl = TextEditingController();
+  final _totalCtrl = TextEditingController();
   final _shakilCtrl = TextEditingController();
   final _nayeemCtrl = TextEditingController();
   final _rashedCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
 
+  double _unitPrice = 50.0;
+  bool _isLoadingPrice = true;
+  bool _isUpdating = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchSubscriptionPrice();
+  }
+
+  Future<void> _fetchSubscriptionPrice() async {
+    try {
+      final res = await ApiClient.instance.get<dynamic>(
+        '/api/getprice',
+        queryParams: {'appname': 'adnetworkpro'},
+        auth: true,
+      );
+      if (res.isSuccess && res.data is Map) {
+        final priceVal = res.data['price'];
+        if (priceVal != null) {
+          final parsed = double.tryParse(priceVal.toString());
+          if (parsed != null && parsed > 0) {
+            _unitPrice = parsed;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[LogPayoutDialog] Price fetch failed: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingPrice = false;
+        });
+      }
+    }
+  }
+
+  void _onSubscribersChanged(String val) {
+    if (_isUpdating) return;
+    _isUpdating = true;
+    final count = double.tryParse(val) ?? 0.0;
+    final total = count * _unitPrice;
+
+    _totalCtrl.text = total > 0 ? total.toStringAsFixed(2) : '';
+    _nayeemCtrl.text = total > 0 ? (total * 0.30).toStringAsFixed(2) : '';
+    _shakilCtrl.text = total > 0 ? (total * 0.30).toStringAsFixed(2) : '';
+    _rashedCtrl.text = total > 0 ? (total * 0.40).toStringAsFixed(2) : '';
+    _isUpdating = false;
+    setState(() {});
+  }
+
+  void _onTotalChanged(String val) {
+    if (_isUpdating) return;
+    _isUpdating = true;
+    final total = double.tryParse(val) ?? 0.0;
+    final count = _unitPrice > 0 ? total / _unitPrice : 0.0;
+
+    _subscribersCtrl.text = count > 0
+        ? (count % 1 == 0 ? count.toInt().toString() : count.toStringAsFixed(1))
+        : '';
+    _nayeemCtrl.text = total > 0 ? (total * 0.30).toStringAsFixed(2) : '';
+    _shakilCtrl.text = total > 0 ? (total * 0.30).toStringAsFixed(2) : '';
+    _rashedCtrl.text = total > 0 ? (total * 0.40).toStringAsFixed(2) : '';
+    _isUpdating = false;
+    setState(() {});
+  }
+
+  void _onPartnerAmountChanged() {
+    if (_isUpdating) return;
+    _isUpdating = true;
+    final nayeem = double.tryParse(_nayeemCtrl.text) ?? 0.0;
+    final shakil = double.tryParse(_shakilCtrl.text) ?? 0.0;
+    final rashed = double.tryParse(_rashedCtrl.text) ?? 0.0;
+    final total = nayeem + shakil + rashed;
+    final count = _unitPrice > 0 ? total / _unitPrice : 0.0;
+
+    _totalCtrl.text = total > 0 ? total.toStringAsFixed(2) : '';
+    _subscribersCtrl.text = count > 0
+        ? (count % 1 == 0 ? count.toInt().toString() : count.toStringAsFixed(1))
+        : '';
+    _isUpdating = false;
+    setState(() {});
+  }
+
   @override
   void dispose() {
+    _subscribersCtrl.dispose();
+    _totalCtrl.dispose();
     _shakilCtrl.dispose();
     _nayeemCtrl.dispose();
     _rashedCtrl.dispose();
@@ -1508,14 +1597,16 @@ class _LogPayoutDialogState extends State<_LogPayoutDialog> {
                 child: Icon(Icons.outbox_rounded, size: 20, color: cs.primary),
               ),
               const SizedBox(width: 12),
-              Text(
-                'Log Partner Payout',
-                style: getBoldStyle(fontSize: 18, color: cs.onSurface),
+              Expanded(
+                child: Text(
+                  'Log Partner Payout',
+                  style: getBoldStyle(fontSize: 18, color: cs.onSurface),
+                ),
               ),
             ],
           ),
           content: SizedBox(
-            width: 320,
+            width: 340,
             child: SingleChildScrollView(
               child: Form(
                 key: _formKey,
@@ -1523,41 +1614,119 @@ class _LogPayoutDialogState extends State<_LogPayoutDialog> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Log splits for Cycle: ${widget.cycle} (${widget.namespace == 'all' ? 'All Apps' : widget.namespace})',
-                      style: getMediumStyle(fontSize: 12, color: cs.primary),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: cs.primary.withValues(alpha: .08),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Cycle: ${widget.cycle}',
+                            style: getBoldStyle(fontSize: 12, color: cs.primary),
+                          ),
+                          Text(
+                            _isLoadingPrice
+                                ? 'Price: Loading...'
+                                : 'Price/Sub: \$${_unitPrice.toStringAsFixed(0)}',
+                            style: getMediumStyle(
+                              fontSize: 11,
+                              color: cs.primary,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 16),
 
-                    // Shakil Amount
-                    _buildAmountField(
-                      controller: _shakilCtrl,
-                      label: 'Shakil Payout Amount (\$)',
-                      hint: '150.00',
+                    // Number of Subscribers input
+                    _buildInputField(
+                      controller: _subscribersCtrl,
+                      label: 'Number of Subscribers',
+                      hint: 'e.g. 10',
+                      icon: Icons.people_outline_rounded,
+                      keyboardType: TextInputType.number,
+                      onChanged: _onSubscribersChanged,
                       cs: cs,
                       isDark: isDark,
                     ),
                     const SizedBox(height: 12),
 
-                    // Nayeem Amount
-                    _buildAmountField(
+                    // Total Amount Money input
+                    _buildInputField(
+                      controller: _totalCtrl,
+                      label: 'Total Payout Amount',
+                      hint: 'e.g. 500.00',
+                      icon: Icons.attach_money_rounded,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      onChanged: _onTotalChanged,
+                      cs: cs,
+                      isDark: isDark,
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Split breakdown badge header
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.pie_chart_outline_rounded,
+                          size: 14,
+                          color: cs.primary,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Partner Distribution (30% / 30% / 40%)',
+                          style: getBoldStyle(
+                            fontSize: 12,
+                            color: cs.onSurface,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+
+                    // Nayeem (30%)
+                    _buildPartnerAmountRow(
                       controller: _nayeemCtrl,
-                      label: 'Nayeem Payout Amount (\$)',
-                      hint: '150.00',
+                      name: 'Nayeem',
+                      percentageText: '30%',
+                      badgeColor: cs.secondary,
+                      onChanged: _onPartnerAmountChanged,
                       cs: cs,
                       isDark: isDark,
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
 
-                    // Rashed Amount
-                    _buildAmountField(
-                      controller: _rashedCtrl,
-                      label: 'Rashed Payout Amount (\$)',
-                      hint: '200.00',
+                    // Shakil (30%)
+                    _buildPartnerAmountRow(
+                      controller: _shakilCtrl,
+                      name: 'Shakil',
+                      percentageText: '30%',
+                      badgeColor: cs.primary,
+                      onChanged: _onPartnerAmountChanged,
                       cs: cs,
                       isDark: isDark,
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
+
+                    // Rashed (40%)
+                    _buildPartnerAmountRow(
+                      controller: _rashedCtrl,
+                      name: 'Rashed',
+                      percentageText: '40%',
+                      badgeColor: Colors.teal,
+                      onChanged: _onPartnerAmountChanged,
+                      cs: cs,
+                      isDark: isDark,
+                    ),
+                    const SizedBox(height: 16),
 
                     // Notes
                     Text(
@@ -1583,7 +1752,7 @@ class _LogPayoutDialogState extends State<_LogPayoutDialog> {
                           color: cs.onSurface,
                         ),
                         decoration: InputDecoration(
-                          hintText: 'e.g. Weekly payout distribution',
+                          hintText: 'e.g. Subscriber payout distribution',
                           hintStyle: getRegularStyle(
                             fontSize: 12,
                             color: cs.onSurface.withValues(alpha: .35),
@@ -1618,6 +1787,15 @@ class _LogPayoutDialogState extends State<_LogPayoutDialog> {
                         final shakil = double.tryParse(_shakilCtrl.text) ?? 0.0;
                         final nayeem = double.tryParse(_nayeemCtrl.text) ?? 0.0;
                         final rashed = double.tryParse(_rashedCtrl.text) ?? 0.0;
+
+                        if (shakil <= 0 && nayeem <= 0 && rashed <= 0) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Please enter subscriber count or payout amount'),
+                            ),
+                          );
+                          return;
+                        }
 
                         context.read<FinanceBloc>().add(
                           LogPayout(
@@ -1660,10 +1838,13 @@ class _LogPayoutDialogState extends State<_LogPayoutDialog> {
     );
   }
 
-  Widget _buildAmountField({
+  Widget _buildInputField({
     required TextEditingController controller,
     required String label,
     required String hint,
+    required IconData icon,
+    required TextInputType keyboardType,
+    required ValueChanged<String> onChanged,
     required ColorScheme cs,
     required bool isDark,
   }) {
@@ -1682,18 +1863,11 @@ class _LogPayoutDialogState extends State<_LogPayoutDialog> {
           ),
           child: TextFormField(
             controller: controller,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            keyboardType: keyboardType,
+            onChanged: onChanged,
             style: getMediumStyle(fontSize: 13, color: cs.onSurface),
-            validator: (val) {
-              if (val == null || val.trim().isEmpty) {
-                return 'Amount is required';
-              }
-              if (double.tryParse(val) == null) {
-                return 'Enter a valid number';
-              }
-              return null;
-            },
             decoration: InputDecoration(
+              prefixIcon: Icon(icon, size: 18, color: cs.primary),
               hintText: hint,
               hintStyle: getRegularStyle(
                 fontSize: 12,
@@ -1708,6 +1882,74 @@ class _LogPayoutDialogState extends State<_LogPayoutDialog> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildPartnerAmountRow({
+    required TextEditingController controller,
+    required String name,
+    required String percentageText,
+    required Color badgeColor,
+    required VoidCallback onChanged,
+    required ColorScheme cs,
+    required bool isDark,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: isDark
+            ? cs.onSurface.withValues(alpha: .03)
+            : cs.surfaceContainerHighest.withValues(alpha: .5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: cs.onSurface.withValues(alpha: .05)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: badgeColor.withValues(alpha: .15),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              percentageText,
+              style: getBoldStyle(fontSize: 10, color: badgeColor),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              name,
+              style: getBoldStyle(fontSize: 12, color: cs.onSurface),
+            ),
+          ),
+          SizedBox(
+            width: 100,
+            child: TextFormField(
+              controller: controller,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              onChanged: (_) => onChanged(),
+              style: getBoldStyle(fontSize: 13, color: cs.onSurface),
+              decoration: InputDecoration(
+                prefixText: '\$ ',
+                prefixStyle: getMediumStyle(fontSize: 12, color: cs.onSurface),
+                hintText: '0.00',
+                hintStyle: getRegularStyle(
+                  fontSize: 12,
+                  color: cs.onSurface.withValues(alpha: .3),
+                ),
+                isDense: true,
+                border: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 6,
+                  vertical: 6,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1729,16 +1971,6 @@ class _SubscriberCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isAutolike = sub.autolike == 1;
-
-    String? formattedCreatedAt;
-    if (sub.createdAt != null && sub.createdAt!.isNotEmpty) {
-      final parsed = DateTime.tryParse(sub.createdAt!);
-      if (parsed != null) {
-        formattedCreatedAt = DateFormat('dd MMM yyyy, hh:mm a').format(parsed);
-      } else {
-        formattedCreatedAt = sub.createdAt;
-      }
-    }
 
     String? formattedStartedAt;
     if (sub.subscriptionStartedAt != null &&

@@ -75,6 +75,8 @@ class LoginBloc extends Bloc<LoginEvent, LoginState> {
 
         // Clear manual logout flag
         await TokenStorage.instance.setManualLogout(false);
+        // Turn off autoplay flag in TokenStorage on login
+        await TokenStorage.instance.resetAutoplayFlagsOnLogin();
         // Fetch subscription check
         final username = response.data!.user?.username;
         if (username != null && username.isNotEmpty) {
