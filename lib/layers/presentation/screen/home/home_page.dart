@@ -24,13 +24,9 @@ import 'package:adnetwork/core/services/link_queue_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-
 class HomePage extends StatefulWidget {
   final int? initialIndex;
-  const HomePage({
-    super.key,
-    this.initialIndex,
-  });
+  const HomePage({super.key, this.initialIndex});
   @override
   State<HomePage> createState() => HomePageState();
 }
@@ -109,7 +105,8 @@ class HomePageState extends State<HomePage> {
   void setIndex(int index, {bool bypassLock = false}) {
     if (index == 0 && !bypassLock) {
       final campaignState = context.read<CampaignBloc>().state;
-      final hasAvailableCampaigns = campaignState.campaignStatus?.campaignsAvailable ?? false;
+      final hasAvailableCampaigns =
+          campaignState.campaignStatus?.campaignsAvailable ?? false;
       if (hasAvailableCampaigns) {
         _showCampaignLockDialog(context);
         return;
@@ -152,7 +149,6 @@ class HomePageState extends State<HomePage> {
     Icons.person_rounded,
   ];
 
-
   Timer? _vpnDnsCheckTimer;
   bool _isDialogShowing = false;
   BuildContext? _dialogContext;
@@ -185,7 +181,9 @@ class HomePageState extends State<HomePage> {
           } else if (_idx == 3) {
             _descendantContext!.read<ExploreBloc>().add(const LoadExplore());
           } else if (_idx == 4) {
-            _descendantContext!.read<ProfileBloc>().add(const LoadProfileStats());
+            _descendantContext!.read<ProfileBloc>().add(
+              const LoadProfileStats(),
+            );
           }
         }
       }
@@ -337,14 +335,11 @@ class HomePageState extends State<HomePage> {
 
     return MultiBlocProvider(
       providers: [
+        BlocProvider(create: (_) => FeedBloc(linkRepository: linkRepo)),
+        BlocProvider(create: (_) => LinkBloc(linkRepository: linkRepo)),
         BlocProvider(
-          create: (_) => FeedBloc(linkRepository: linkRepo),
-        ),
-        BlocProvider(
-          create: (_) => LinkBloc(linkRepository: linkRepo),
-        ),
-        BlocProvider(
-          create: (_) => ExploreBloc(userRepository: context.read<UserRepository>()),
+          create: (_) =>
+              ExploreBloc(userRepository: context.read<UserRepository>()),
         ),
         BlocProvider(
           create: (_) => NoticeBloc(noticeRepository: NoticeRepository()),
@@ -371,350 +366,385 @@ class HomePageState extends State<HomePage> {
               return Scaffold(
                 backgroundColor: cs.surface,
                 drawer: Drawer(
-              backgroundColor: cs.surface,
-              child: SafeArea(
-                child: BlocBuilder<ProfileBloc, ProfileState>(
-                  builder: (context, profileState) {
-                    final user = profileState.currentUser;
-                    return Column(
-                      children: [
-                        // ── Premium gradient header ──
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.fromLTRB(24, 24, 24, 28),
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: isDark
-                                  ? [
-                                      cs.primary.withValues(alpha: .2),
-                                      cs.surface,
-                                    ]
-                                  : [
-                                      cs.primary.withValues(alpha: .08),
-                                      cs.surface,
-                                    ],
-                            ),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(3),
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  gradient: LinearGradient(
-                                    colors: [cs.primary, cs.secondary],
-                                  ),
-                                ),
-                                child: Container(
-                                  padding: const EdgeInsets.all(2),
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: cs.surface,
-                                  ),
-                                  child: UserAvatar(
-                                    username: user?.username ?? 'User',
-                                    radius: 32,
-                                  ),
+                  backgroundColor: cs.surface,
+                  child: SafeArea(
+                    child: BlocBuilder<ProfileBloc, ProfileState>(
+                      builder: (context, profileState) {
+                        final user = profileState.currentUser;
+                        return Column(
+                          children: [
+                            // ── Premium gradient header ──
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.fromLTRB(
+                                24,
+                                24,
+                                24,
+                                28,
+                              ),
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: isDark
+                                      ? [
+                                          cs.primary.withValues(alpha: .2),
+                                          cs.surface,
+                                        ]
+                                      : [
+                                          cs.primary.withValues(alpha: .08),
+                                          cs.surface,
+                                        ],
                                 ),
                               ),
-                              const SizedBox(height: 16),
-                              Text(
-                                user?.username ?? 'User',
-                                style: getBoldStyle(
-                                  fontSize: 18,
-                                  color: cs.onSurface,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              if (user?.bio != null)
-                                Text(
-                                  user!.bio!,
-                                  style: getRegularStyle(
-                                    fontSize: 12,
-                                    color: cs.onSurface.withValues(alpha: .5),
-                                  ),
-                                ),
-                              const SizedBox(height: 12),
-                              Row(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(
-                                    '${user?.followersCount ?? 0}',
-                                    style: getBoldStyle(
-                                      fontSize: 14,
-                                      color: cs.onSurface,
-                                    ),
-                                  ),
-                                  Text(
-                                    ' Followers',
-                                    style: getRegularStyle(
-                                      fontSize: 12,
-                                      color: cs.onSurface.withValues(alpha: .5),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 16),
-                                  Text(
-                                    '${user?.followingCount ?? 0}',
-                                    style: getBoldStyle(
-                                      fontSize: 14,
-                                      color: cs.onSurface,
-                                    ),
-                                  ),
-                                  Text(
-                                    ' Following',
-                                    style: getRegularStyle(
-                                      fontSize: 12,
-                                      color: cs.onSurface.withValues(alpha: .5),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                        // ── Scrollable Menu Items ──
-                        Expanded(
-                          child: SingleChildScrollView(
-                            physics: const BouncingScrollPhysics(),
-                            child: Column(
-                              children: [
-                                const SizedBox(height: 8),
-                                ...List.generate(
-                                  5,
-                                  (i) => _Item(
-                                    icon: _icons[i],
-                                    label: _labels[i],
-                                    active: _idx == i,
-                                    onTap: () {
-                                      Navigator.pop(context);
-                                      if (i == 0) {
-                                        final campaignState = context.read<CampaignBloc>().state;
-                                        final hasAvailableCampaigns = campaignState.campaignStatus?.campaignsAvailable ?? false;
-                                        if (hasAvailableCampaigns) {
-                                          _showCampaignLockDialog(context);
-                                          return;
-                                        }
-                                        context.read<FeedBloc>().add(const RefreshFeed());
-                                        context.read<NoticeBloc>().add(const LoadNotices());
-                                        setState(() => _idx = 0);
-                                      } else if (i == 3) {
-                                        context.read<ExploreBloc>().add(const RefreshExplore());
-                                        setState(() => _idx = 3);
-                                      } else {
-                                        setIndex(i);
-                                      }
-                                    },
-                                  ),
-                                ),
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 20,
-                                    vertical: 8,
-                                  ),
-                                  child: Divider(
-                                    color: cs.onSurface.withValues(alpha: .06),
-                                  ),
-                                ),
-                                _Item(
-                                  icon: Icons.query_stats_rounded,
-                                  label: 'Stats',
-                                  active: false,
-                                  onTap: () {
-                                    Navigator.pop(context);
-                                    Navigator.pushNamed(context, '/stats');
-                                  },
-                                ),
-                                _Item(
-                                  icon: Icons.settings_rounded,
-                                  label: 'Settings',
-                                  active: false,
-                                  onTap: () {
-                                    Navigator.pop(context);
-                                    Navigator.pushNamed(context, '/settings');
-                                  },
-                                ),
-                                // Admin & Moderator panel
-                                if (user?.role == 'admin' ||
-                                    user?.role == 'moderator')
-                                  _Item(
-                                    icon: Icons.admin_panel_settings_rounded,
-                                    label: 'Admin Panel',
-                                    active: false,
-                                    onTap: () {
-                                      Navigator.pop(context);
-                                      Navigator.pushNamed(context, '/admin');
-                                    },
-                                  ),
-                                // Manage Subscriptions — visible for admin or permitted moderators
-                                if (user?.role == 'admin' ||
-                                    (user?.role == 'moderator' &&
-                                        MobileConfigManager.instance.config
-                                            .hasAutoPermission(user?.email)))
-                                  _Item(
-                                    icon: Icons.subscriptions_rounded,
-                                    label: 'Manage Subscriptions',
-                                    active: false,
-                                    onTap: () {
-                                      Navigator.pop(context);
-                                      Navigator.pushNamed(
-                                        context,
-                                        '/admin/subscriptions',
-                                      );
-                                    },
-                                  ),
-                                // Admin only options
-                                if (user?.role == 'admin') ...[
-                                  _Item(
-                                    icon: Icons.account_balance_wallet_rounded,
-                                    label: 'Finance',
-                                    active: false,
-                                    onTap: () {
-                                      Navigator.pop(context);
-                                      Navigator.pushNamed(
-                                        context,
-                                        '/admin/finance',
-                                      );
-                                    },
-                                  ),
-                                  _Item(
-                                    icon: Icons.campaign_rounded,
-                                    label: 'Manage Notices',
-                                    active: false,
-                                    onTap: () async {
-                                      Navigator.pop(context);
-                                      await Navigator.pushNamed(
-                                        context,
-                                        '/admin/notices',
-                                      );
-                                      if (context.mounted) {
-                                        context.read<NoticeBloc>().add(
-                                          const LoadNotices(),
-                                        );
-                                      }
-                                    },
-                                  ),
-                                ],
-                                const SizedBox(height: 16),
-                              ],
-                            ),
-                          ),
-                        ),
-                        // Logout
-                        Padding(
-                          padding: const EdgeInsets.only(
-                            left: 12,
-                            right: 12,
-                            bottom: 12,
-                          ),
-                          child: Material(
-                            color: cs.error.withValues(
-                              alpha: isDark ? .1 : .06,
-                            ),
-                            borderRadius: BorderRadius.circular(14),
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(14),
-                              onTap: () async {
-                                await TokenStorage.instance.setManualLogout(
-                                  true,
-                                );
-                                await TokenStorage.instance.clearAll();
-                                if (context.mounted) {
-                                  context.read<ProfileBloc>().add(
-                                    const ClearProfile(),
-                                  );
-                                  Navigator.pop(context);
-                                  Navigator.pushNamedAndRemoveUntil(
-                                    context,
-                                    '/login',
-                                    (_) => false,
-                                  );
-                                }
-                              },
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 14,
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      Icons.logout_rounded,
-                                      size: 22,
-                                      color: cs.error,
-                                    ),
-                                    const SizedBox(width: 14),
-                                    Text(
-                                      'Log Out',
-                                      style: getMediumStyle(
-                                        fontSize: 14,
-                                        color: cs.error,
+                                  Container(
+                                    padding: const EdgeInsets.all(3),
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      gradient: LinearGradient(
+                                        colors: [cs.primary, cs.secondary],
                                       ),
                                     ),
+                                    child: Container(
+                                      padding: const EdgeInsets.all(2),
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: cs.surface,
+                                      ),
+                                      child: UserAvatar(
+                                        username: user?.username ?? 'User',
+                                        radius: 32,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    user?.username ?? 'User',
+                                    style: getBoldStyle(
+                                      fontSize: 18,
+                                      color: cs.onSurface,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  if (user?.bio != null)
+                                    Text(
+                                      user!.bio!,
+                                      style: getRegularStyle(
+                                        fontSize: 12,
+                                        color: cs.onSurface.withValues(
+                                          alpha: .5,
+                                        ),
+                                      ),
+                                    ),
+                                  const SizedBox(height: 12),
+                                  Row(
+                                    children: [
+                                      Text(
+                                        '${user?.followersCount ?? 0}',
+                                        style: getBoldStyle(
+                                          fontSize: 14,
+                                          color: cs.onSurface,
+                                        ),
+                                      ),
+                                      Text(
+                                        ' Followers',
+                                        style: getRegularStyle(
+                                          fontSize: 12,
+                                          color: cs.onSurface.withValues(
+                                            alpha: .5,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 16),
+                                      Text(
+                                        '${user?.followingCount ?? 0}',
+                                        style: getBoldStyle(
+                                          fontSize: 14,
+                                          color: cs.onSurface,
+                                        ),
+                                      ),
+                                      Text(
+                                        ' Following',
+                                        style: getRegularStyle(
+                                          fontSize: 12,
+                                          color: cs.onSurface.withValues(
+                                            alpha: .5,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            // ── Scrollable Menu Items ──
+                            Expanded(
+                              child: SingleChildScrollView(
+                                physics: const BouncingScrollPhysics(),
+                                child: Column(
+                                  children: [
+                                    const SizedBox(height: 8),
+                                    ...List.generate(
+                                      5,
+                                      (i) => _Item(
+                                        icon: _icons[i],
+                                        label: _labels[i],
+                                        active: _idx == i,
+                                        onTap: () {
+                                          Navigator.pop(context);
+                                          if (i == 0) {
+                                            final campaignState = context
+                                                .read<CampaignBloc>()
+                                                .state;
+                                            final hasAvailableCampaigns =
+                                                campaignState
+                                                    .campaignStatus
+                                                    ?.campaignsAvailable ??
+                                                false;
+                                            if (hasAvailableCampaigns) {
+                                              _showCampaignLockDialog(context);
+                                              return;
+                                            }
+                                            context.read<FeedBloc>().add(
+                                              const RefreshFeed(),
+                                            );
+                                            context.read<NoticeBloc>().add(
+                                              const LoadNotices(),
+                                            );
+                                            setState(() => _idx = 0);
+                                          } else if (i == 3) {
+                                            context.read<ExploreBloc>().add(
+                                              const RefreshExplore(),
+                                            );
+                                            setState(() => _idx = 3);
+                                          } else {
+                                            setIndex(i);
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 20,
+                                        vertical: 8,
+                                      ),
+                                      child: Divider(
+                                        color: cs.onSurface.withValues(
+                                          alpha: .06,
+                                        ),
+                                      ),
+                                    ),
+                                    _Item(
+                                      icon: Icons.query_stats_rounded,
+                                      label: 'Stats',
+                                      active: false,
+                                      onTap: () {
+                                        Navigator.pop(context);
+                                        Navigator.pushNamed(context, '/stats');
+                                      },
+                                    ),
+                                    _Item(
+                                      icon: Icons.settings_rounded,
+                                      label: 'Settings',
+                                      active: false,
+                                      onTap: () {
+                                        Navigator.pop(context);
+                                        Navigator.pushNamed(
+                                          context,
+                                          '/settings',
+                                        );
+                                      },
+                                    ),
+                                    // Admin & Moderator panel
+                                    if (user?.role == 'admin' ||
+                                        user?.role == 'moderator')
+                                      _Item(
+                                        icon:
+                                            Icons.admin_panel_settings_rounded,
+                                        label: 'Admin Panel',
+                                        active: false,
+                                        onTap: () {
+                                          Navigator.pop(context);
+                                          Navigator.pushNamed(
+                                            context,
+                                            '/admin',
+                                          );
+                                        },
+                                      ),
+                                    // Manage Subscriptions — visible for admin or permitted moderators
+                                    if (user?.role == 'admin' ||
+                                        (user?.role == 'moderator' &&
+                                            MobileConfigManager.instance.config
+                                                .hasAutoPermission(
+                                                  user?.email,
+                                                )))
+                                      _Item(
+                                        icon: Icons.subscriptions_rounded,
+                                        label: 'Manage Subscriptions',
+                                        active: false,
+                                        onTap: () {
+                                          Navigator.pop(context);
+                                          Navigator.pushNamed(
+                                            context,
+                                            '/admin/subscriptions',
+                                          );
+                                        },
+                                      ),
+                                    // Admin only options
+                                    if (user?.role == 'admin') ...[
+                                      _Item(
+                                        icon: Icons
+                                            .account_balance_wallet_rounded,
+                                        label: 'Finance',
+                                        active: false,
+                                        onTap: () {
+                                          Navigator.pop(context);
+                                          Navigator.pushNamed(
+                                            context,
+                                            '/admin/finance',
+                                          );
+                                        },
+                                      ),
+                                      _Item(
+                                        icon: Icons.campaign_rounded,
+                                        label: 'Manage Notices',
+                                        active: false,
+                                        onTap: () async {
+                                          Navigator.pop(context);
+                                          await Navigator.pushNamed(
+                                            context,
+                                            '/admin/notices',
+                                          );
+                                          if (context.mounted) {
+                                            context.read<NoticeBloc>().add(
+                                              const LoadNotices(),
+                                            );
+                                          }
+                                        },
+                                      ),
+                                    ],
+                                    const SizedBox(height: 16),
                                   ],
                                 ),
                               ),
                             ),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 24),
-                          child: Text(
-                            'Ad Network v1.0.14',
-                            style: getRegularStyle(
-                              fontSize: 11,
-                              color: cs.onSurface.withValues(alpha: .25),
+                            // Logout
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                left: 12,
+                                right: 12,
+                                bottom: 12,
+                              ),
+                              child: Material(
+                                color: cs.error.withValues(
+                                  alpha: isDark ? .1 : .06,
+                                ),
+                                borderRadius: BorderRadius.circular(14),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(14),
+                                  onTap: () async {
+                                    await TokenStorage.instance.setManualLogout(
+                                      true,
+                                    );
+                                    await TokenStorage.instance.clearAll();
+                                    if (context.mounted) {
+                                      context.read<ProfileBloc>().add(
+                                        const ClearProfile(),
+                                      );
+                                      Navigator.pop(context);
+                                      Navigator.pushNamedAndRemoveUntil(
+                                        context,
+                                        '/login',
+                                        (_) => false,
+                                      );
+                                    }
+                                  },
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 14,
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.logout_rounded,
+                                          size: 22,
+                                          color: cs.error,
+                                        ),
+                                        const SizedBox(width: 14),
+                                        Text(
+                                          'Log Out',
+                                          style: getMediumStyle(
+                                            fontSize: 14,
+                                            color: cs.error,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-            ),
-            body: SafeArea(
-              top: false,
-              bottom: false,
-              left: false,
-              right: false,
-              child: Stack(
-                children: [
-                  // Offstage keeps the feed screen, BLoC subscriptions, and AutoPlay engine
-                  // alive in the background while in PIP mode.
-                  Offstage(
-                    offstage: isPip,
-                    child: SafeArea(
-                      child: Column(
-                        children: [
-                          // Main content
-                          Expanded(
-                            child: IndexedStack(
-                              index: _idx,
-                              children: pages,
+                            const SizedBox(height: 8),
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 24),
+                              child: Text(
+                                'Ad Network v1.0.18',
+                                style: getRegularStyle(
+                                  fontSize: 11,
+                                  color: cs.onSurface.withValues(alpha: .25),
+                                ),
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Positioned.fill(
-                    child: LinkQueueOverlay(
-                      key: const ValueKey('active_link_queue_overlay'),
-                      isPipMode: isPip,
-                      onPauseAutoPlay: () {
-                        LinkQueueManager.instance.requestPauseAutoPlay();
+                          ],
+                        );
                       },
                     ),
                   ),
-                ],
-              ),
-            ),
+                ),
+                body: SafeArea(
+                  top: false,
+                  bottom: false,
+                  left: false,
+                  right: false,
+                  child: Stack(
+                    children: [
+                      // Offstage keeps the feed screen, BLoC subscriptions, and AutoPlay engine
+                      // alive in the background while in PIP mode.
+                      Offstage(
+                        offstage: isPip,
+                        child: SafeArea(
+                          child: Column(
+                            children: [
+                              // Main content
+                              Expanded(
+                                child: IndexedStack(
+                                  index: _idx,
+                                  children: pages,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Positioned.fill(
+                        child: LinkQueueOverlay(
+                          key: const ValueKey('active_link_queue_overlay'),
+                          isPipMode: isPip,
+                          onPauseAutoPlay: () {
+                            LinkQueueManager.instance.requestPauseAutoPlay();
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
           );
-        },
-      );
         },
       ),
     );
