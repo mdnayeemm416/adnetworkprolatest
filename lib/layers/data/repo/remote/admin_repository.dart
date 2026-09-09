@@ -272,6 +272,8 @@ class AdminRepository {
   Future<ApiResponse<DailyDetailModel>> getDailyDetail({
     String? date,
     String? namespace,
+    int page = 1,
+    int limit = 50,
   }) async {
     return _api.get<DailyDetailModel>(
       ApiEndpoints.financeDailyDetail,
@@ -279,6 +281,8 @@ class AdminRepository {
         if (date != null && date.isNotEmpty) 'date': date,
         if (namespace != null && namespace != 'all') 'namespace': namespace,
         if (namespace != null && namespace != 'all') 'appname': namespace,
+        'page': page.toString(),
+        'limit': limit.toString(),
       },
       fromJsonModel: (json) => DailyDetailModel.fromJson(json as Map<String, dynamic>),
     );

@@ -12,6 +12,7 @@ class FinanceState extends Equatable {
   final String activeCycle;
   final String activeNamespace;
   final String? activeDetailDate;
+  final int currentDetailPage;
 
   const FinanceState({
     this.status = FinanceStatus.initial,
@@ -23,6 +24,7 @@ class FinanceState extends Equatable {
     this.activeCycle = '',
     this.activeNamespace = 'all',
     this.activeDetailDate,
+    this.currentDetailPage = 1,
   });
 
   FinanceState copyWith({
@@ -35,6 +37,7 @@ class FinanceState extends Equatable {
     String? activeCycle,
     String? activeNamespace,
     String? activeDetailDate,
+    int? currentDetailPage,
   }) {
     return FinanceState(
       status: status ?? this.status,
@@ -46,6 +49,7 @@ class FinanceState extends Equatable {
       activeCycle: activeCycle ?? this.activeCycle,
       activeNamespace: activeNamespace ?? this.activeNamespace,
       activeDetailDate: activeDetailDate ?? this.activeDetailDate,
+      currentDetailPage: currentDetailPage ?? this.currentDetailPage,
     );
   }
 
@@ -60,5 +64,6 @@ class FinanceState extends Equatable {
         activeCycle,
         activeNamespace,
         activeDetailDate,
+        currentDetailPage,
       ];
 }

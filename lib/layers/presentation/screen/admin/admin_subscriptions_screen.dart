@@ -2,6 +2,7 @@ import 'package:adnetwork/config/theme/styles_manager.dart';
 import 'package:adnetwork/layers/data/model/user_model.dart';
 import 'package:adnetwork/layers/data/repo/remote/admin_repository.dart';
 import 'package:adnetwork/layers/presentation/controller/admin/admin_bloc.dart';
+import 'package:adnetwork/layers/presentation/controller/profile/profile_bloc.dart';
 import 'package:adnetwork/layers/presentation/widget/user_avatar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -915,14 +916,23 @@ class _UserSubConfigDialogState extends State<_UserSubConfigDialog> {
   final _customMethodCtrl = TextEditingController();
   final _txidCtrl = TextEditingController();
 
-  final List<String> _paymentMethods = [
+  final List<String> _adminPaymentMethods = [
     'bkash',
     'nagad',
     'roket',
     'upay',
     'cash',
     'free',
-    'other'
+    'other',
+  ];
+
+  final List<String> _modPaymentMethods = [
+    'bkash',
+    'nagad',
+    'roket',
+    'upay',
+    'cash',
+    'other',
   ];
 
   @override
@@ -936,6 +946,9 @@ class _UserSubConfigDialogState extends State<_UserSubConfigDialog> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final currentUser = context.watch<ProfileBloc>().state.currentUser;
+    final isAdmin = currentUser?.role == 'admin';
+    final paymentMethods = isAdmin ? _adminPaymentMethods : _modPaymentMethods;
 
     return AlertDialog(
       backgroundColor: cs.surface,
@@ -955,31 +968,33 @@ class _UserSubConfigDialogState extends State<_UserSubConfigDialog> {
             ),
             const SizedBox(height: 16),
 
-            // Free Switch
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Free Subscription',
-                  style: getBoldStyle(fontSize: 14, color: cs.onSurface),
-                ),
-                Switch(
-                  value: _isFree,
-                  activeColor: cs.primary,
-                  onChanged: (val) {
-                    setState(() {
-                      _isFree = val;
-                      if (val) {
-                        _selectedMethod = 'free';
-                      } else {
-                        _selectedMethod = 'bkash';
-                      }
-                    });
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
+            // Free Switch (Only for Admin)
+            if (isAdmin) ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Free Subscription',
+                    style: getBoldStyle(fontSize: 14, color: cs.onSurface),
+                  ),
+                  Switch(
+                    value: _isFree,
+                    activeTrackColor: cs.primary,
+                    onChanged: (val) {
+                      setState(() {
+                        _isFree = val;
+                        if (val) {
+                          _selectedMethod = 'free';
+                        } else {
+                          _selectedMethod = 'bkash';
+                        }
+                      });
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+            ],
 
             // Payment Method selector
             Text(
@@ -996,10 +1011,12 @@ class _UserSubConfigDialogState extends State<_UserSubConfigDialog> {
               ),
               child: DropdownButtonHideUnderline(
                 child: DropdownButton<String>(
-                  value: _selectedMethod,
+                  value: paymentMethods.contains(_selectedMethod)
+                      ? _selectedMethod
+                      : paymentMethods.first,
                   isExpanded: true,
                   dropdownColor: isDark ? const Color(0xFF2A2A3A) : cs.surface,
-                  items: _paymentMethods.map((m) {
+                  items: paymentMethods.map((m) {
                     return DropdownMenuItem<String>(
                       value: m,
                       child: Text(
@@ -1008,7 +1025,7 @@ class _UserSubConfigDialogState extends State<_UserSubConfigDialog> {
                       ),
                     );
                   }).toList(),
-                  onChanged: _isFree
+                  onChanged: (isAdmin && _isFree)
                       ? null
                       : (val) {
                           if (val != null) {
@@ -1110,15 +1127,21 @@ class _UserSubConfigDialogState extends State<_UserSubConfigDialog> {
               return;
             }
 
-            final method = _selectedMethod == 'other'
+            final currentMethod = (isAdmin && _isFree)
+                ? 'free'
+                : (paymentMethods.contains(_selectedMethod)
+                    ? _selectedMethod
+                    : paymentMethods.first);
+
+            final method = currentMethod == 'other'
                 ? _customMethodCtrl.text.trim()
-                : _selectedMethod;
+                : currentMethod;
 
             widget.bloc.add(
               UpdateSubscription(
                 widget.userId,
                 1,
-                isFree: _isFree ? 1 : 0,
+                isFree: isAdmin ? (_isFree ? 1 : 0) : 0,
                 paymentMethod: method.isEmpty ? 'other' : method,
                 txid: txid,
               ),

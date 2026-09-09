@@ -110,6 +110,7 @@ class FinanceBloc extends Bloc<FinanceEvent, FinanceState> {
       detailStatus: FinanceStatus.loading,
       activeDetailDate: event.date,
       activeNamespace: event.namespace ?? state.activeNamespace,
+      currentDetailPage: event.page,
       errorMessage: '',
       successMessage: '',
     ));
@@ -118,12 +119,15 @@ class FinanceBloc extends Bloc<FinanceEvent, FinanceState> {
       final response = await adminRepository.getDailyDetail(
         date: event.date,
         namespace: event.namespace ?? (state.activeNamespace == 'all' ? null : state.activeNamespace),
+        page: event.page,
+        limit: event.limit,
       );
 
       if (response.isSuccess && response.data != null) {
         emit(state.copyWith(
           detailStatus: FinanceStatus.loaded,
           dailyDetail: response.data,
+          currentDetailPage: event.page,
         ));
       } else {
         emit(state.copyWith(

@@ -535,7 +535,7 @@ class HomePageState extends State<HomePage> {
                                     Navigator.pushNamed(context, '/settings');
                                   },
                                 ),
-                                // Admin panel — visible for admin and moderator users
+                                // Admin & Moderator panel
                                 if (user?.role == 'admin' ||
                                     user?.role == 'moderator')
                                   _Item(
@@ -547,8 +547,11 @@ class HomePageState extends State<HomePage> {
                                       Navigator.pushNamed(context, '/admin');
                                     },
                                   ),
-                                // Admin only options
-                                if (user?.role == 'admin') ...[
+                                // Manage Subscriptions — visible for admin or permitted moderators
+                                if (user?.role == 'admin' ||
+                                    (user?.role == 'moderator' &&
+                                        MobileConfigManager.instance.config
+                                            .hasAutoPermission(user?.email)))
                                   _Item(
                                     icon: Icons.subscriptions_rounded,
                                     label: 'Manage Subscriptions',
@@ -561,6 +564,8 @@ class HomePageState extends State<HomePage> {
                                       );
                                     },
                                   ),
+                                // Admin only options
+                                if (user?.role == 'admin') ...[
                                   _Item(
                                     icon: Icons.account_balance_wallet_rounded,
                                     label: 'Finance',

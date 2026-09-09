@@ -20,11 +20,18 @@ class LoadFinanceSummary extends FinanceEvent {
 class LoadDailyDetail extends FinanceEvent {
   final String? date;
   final String? namespace;
+  final int page;
+  final int limit;
 
-  const LoadDailyDetail({this.date, this.namespace});
+  const LoadDailyDetail({
+    this.date,
+    this.namespace,
+    this.page = 1,
+    this.limit = 50,
+  });
 
   @override
-  List<Object?> get props => [date, namespace];
+  List<Object?> get props => [date, namespace, page, limit];
 }
 
 class LogPayout extends FinanceEvent {

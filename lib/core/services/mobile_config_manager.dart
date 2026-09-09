@@ -7,6 +7,7 @@ class MobileConfig {
   final String adsHeight;
   final String adsWidth;
   final String allowDns;
+  final String autoPermission;
   final String breakTimeLinkCount;
   final String campaignMust;
   final String campaignSeconds;
@@ -23,6 +24,7 @@ class MobileConfig {
     required this.adsHeight,
     required this.adsWidth,
     required this.allowDns,
+    required this.autoPermission,
     required this.breakTimeLinkCount,
     required this.campaignMust,
     required this.campaignSeconds,
@@ -40,6 +42,7 @@ class MobileConfig {
     adsHeight: "256",
     adsWidth: "256",
     allowDns: "0",
+    autoPermission: "",
     breakTimeLinkCount: "100",
     campaignMust: "1",
     campaignSeconds: "20",
@@ -56,6 +59,18 @@ class MobileConfig {
   int get breakTimeLinkCountInt => int.tryParse(breakTimeLinkCount) ?? 100;
   int get feedBreakTimeMinutes => int.tryParse(feedBreakTime) ?? 30;
 
+  List<String> get autoPermissionEmails => autoPermission
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .where((e) => e.isNotEmpty)
+      .toList();
+
+  bool hasAutoPermission(String? email) {
+    if (email == null || email.trim().isEmpty) return false;
+    final normalized = email.trim().toLowerCase();
+    return autoPermissionEmails.contains(normalized);
+  }
+
   factory MobileConfig.fromJson(Map<String, dynamic> json) {
     // If the json has a "data" field, look inside it; otherwise parse the root object.
     final Map<String, dynamic> data = (json['data'] is Map<String, dynamic>)
@@ -66,6 +81,7 @@ class MobileConfig {
       adsHeight: data['ads_height']?.toString() ?? "256",
       adsWidth: data['ads_width']?.toString() ?? "256",
       allowDns: data['allow_dns']?.toString() ?? "0",
+      autoPermission: (data['auto_permisson'] ?? data['auto_permission'])?.toString() ?? "",
       breakTimeLinkCount: data['break_time_link_count']?.toString() ?? "100",
       campaignMust: data['campaign_must']?.toString() ?? "1",
       campaignSeconds: data['campaign_seconds']?.toString() ?? "20",
@@ -85,6 +101,7 @@ class MobileConfig {
       'ads_height': adsHeight,
       'ads_width': adsWidth,
       'allow_dns': allowDns,
+      'auto_permisson': autoPermission,
       'break_time_link_count': breakTimeLinkCount,
       'campaign_must': campaignMust,
       'campaign_seconds': campaignSeconds,

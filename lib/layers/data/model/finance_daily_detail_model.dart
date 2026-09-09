@@ -7,6 +7,10 @@ class DailyDetailModel {
   final int registrationsCount;
   final double payoutsTotal;
   final int disbursedSubscribersCount;
+  final int totalCount;
+  final int page;
+  final int limit;
+  final int totalPages;
   final List<SessionSubscriber> subscribers;
   final List<PayoutModel> payouts;
 
@@ -17,6 +21,10 @@ class DailyDetailModel {
     required this.registrationsCount,
     required this.payoutsTotal,
     required this.disbursedSubscribersCount,
+    this.totalCount = 0,
+    this.page = 1,
+    this.limit = 50,
+    this.totalPages = 1,
     required this.subscribers,
     required this.payouts,
   });
@@ -28,6 +36,33 @@ class DailyDetailModel {
       return double.tryParse(val.toString()) ?? 0.0;
     }
 
+    final usersList = json['users'] != null
+        ? (json['users'] as List)
+            .map((s) => SessionSubscriber.fromJson(s as Map<String, dynamic>))
+            .toList()
+        : <SessionSubscriber>[];
+
+    final limit = json['limit'] as int? ??
+        json['per_page'] as int? ??
+        json['perPage'] as int? ??
+        50;
+
+    final page = json['page'] as int? ??
+        json['current_page'] as int? ??
+        json['currentPage'] as int? ??
+        1;
+
+    final totalCount = json['totalCount'] as int? ??
+        json['total_count'] as int? ??
+        json['total'] as int? ??
+        json['totalUsers'] as int? ??
+        json['total_users'] as int? ??
+        usersList.length;
+
+    final totalPages = json['totalPages'] as int? ??
+        json['total_pages'] as int? ??
+        (totalCount > 0 && limit > 0 ? (totalCount / limit).ceil() : 1);
+
     return DailyDetailModel(
       date: json['date'] as String?,
       startDate: json['startDate'] as String?,
@@ -35,11 +70,11 @@ class DailyDetailModel {
       registrationsCount: json['registrationsCount'] as int? ?? json['registrations_count'] as int? ?? 0,
       payoutsTotal: toDouble(json['payoutsTotal'] ?? json['payouts_total']),
       disbursedSubscribersCount: json['disbursedSubscribersCount'] as int? ?? json['disbursed_subscribers_count'] as int? ?? 0,
-      subscribers: json['users'] != null
-          ? (json['users'] as List)
-              .map((s) => SessionSubscriber.fromJson(s as Map<String, dynamic>))
-              .toList()
-          : [],
+      totalCount: totalCount,
+      page: page,
+      limit: limit,
+      totalPages: totalPages > 0 ? totalPages : 1,
+      subscribers: usersList,
       payouts: json['payouts'] != null
           ? (json['payouts'] as List)
               .map((p) => PayoutModel.fromJson(p as Map<String, dynamic>))

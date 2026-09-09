@@ -10,6 +10,7 @@ import 'package:adnetwork/core/services/pip_service.dart';
 
 /// Represents an active link session being displayed in the full display WebView.
 class ActiveViewSession {
+  final String sessionId;
   final String url;
   final String linkId;
   final int durationSeconds;
@@ -20,6 +21,7 @@ class ActiveViewSession {
   final DateTime startedAt;
 
   ActiveViewSession({
+    String? sessionId,
     required this.url,
     required this.linkId,
     required this.durationSeconds,
@@ -28,7 +30,8 @@ class ActiveViewSession {
     this.totalLinks = 1,
     this.isAutoPlay = false,
     DateTime? startedAt,
-  }) : startedAt = startedAt ?? DateTime.now();
+  })  : sessionId = sessionId ?? '${DateTime.now().microsecondsSinceEpoch}_$linkId',
+        startedAt = startedAt ?? DateTime.now();
 
   int get elapsedSeconds => DateTime.now().difference(startedAt).inSeconds;
   int get remainingSeconds => (durationSeconds - elapsedSeconds).clamp(0, durationSeconds);
@@ -332,7 +335,7 @@ class LinkQueueManager {
   /// Removes the link from Hive, calls the completed stream (triggers like API),
   /// and in autoplay mode, directly swaps to the next queued link (no close/reopen).
   /// If the queue is empty, fetches fresh links from the API and continues.
-  void onSessionFinished() {
+  Future<void> onSessionFinished() async {
     final session = activeSessionNotifier.value;
     if (session == null) return;
 
@@ -341,8 +344,8 @@ class LinkQueueManager {
     final wasAutoPlay = session.isAutoPlay;
     final pageIndex = session.pageIndex;
 
-    // Remove from Hive queue
-    removeFromQueue(linkId);
+    // Remove from Hive queue before picking next link
+    await removeFromQueue(linkId);
 
     // Trigger the like API
     if (linkId.isNotEmpty) {
@@ -350,28 +353,28 @@ class LinkQueueManager {
     }
 
     // In autoplay mode, directly swap to next queued link (WebView stays open) if not in break time
-    if (wasAutoPlay && hasQueuedLinks && !isFeedBreakActive) {
-      final next = peekNext();
-      if (next != null) {
-        final duration = randomViewDurationSeconds;
-        final newSession = ActiveViewSession(
-          url: next.url,
-          linkId: next.linkId,
-          durationSeconds: duration,
-          pageIndex: pageIndex,
-          linkIndex: 1,
-          totalLinks: queueLength,
-          isAutoPlay: true,
-        );
-        debugPrint('[LinkQueue] ▶ Swapping to next: ${next.url} (${duration}s) [$queueLength remaining]');
-        activeSessionNotifier.value = newSession;
-        _sessionController.add(newSession);
-        return;
-      }
-    }
-
-    // Queue empty during autoplay — fetch fresh links from API and continue if not in break time
     if (wasAutoPlay && !isFeedBreakActive) {
+      if (hasQueuedLinks) {
+        final next = peekNext();
+        if (next != null) {
+          final duration = randomViewDurationSeconds;
+          final newSession = ActiveViewSession(
+            url: next.url,
+            linkId: next.linkId,
+            durationSeconds: duration,
+            pageIndex: pageIndex,
+            linkIndex: 1,
+            totalLinks: queueLength,
+            isAutoPlay: true,
+          );
+          debugPrint('[LinkQueue] ▶ Swapping to next: ${next.url} (${duration}s) [$queueLength remaining]');
+          activeSessionNotifier.value = newSession;
+          _sessionController.add(newSession);
+          return;
+        }
+      }
+
+      // Queue empty during autoplay — fetch fresh links from API and continue if not in break time
       _fetchAndContinueAutoPlay(pageIndex);
       return;
     }
@@ -386,7 +389,7 @@ class LinkQueueManager {
 
   /// Called when the session encountered an error or timed out.
   /// Same direct-swap behavior as onSessionFinished for seamless autoplay.
-  void onSessionError() {
+  Future<void> onSessionError() async {
     final session = activeSessionNotifier.value;
     if (session == null) return;
 
@@ -396,35 +399,35 @@ class LinkQueueManager {
     final pageIndex = session.pageIndex;
 
     // Remove from Hive queue and complete the link so user doesn't get stuck
-    removeFromQueue(linkId);
+    await removeFromQueue(linkId);
 
     if (linkId.isNotEmpty) {
       _completedLinkController.add(linkId);
     }
 
     // In autoplay mode, directly swap to next queued link (WebView stays open) if not in break time
-    if (wasAutoPlay && hasQueuedLinks && !isFeedBreakActive) {
-      final next = peekNext();
-      if (next != null) {
-        final duration = randomViewDurationSeconds;
-        final newSession = ActiveViewSession(
-          url: next.url,
-          linkId: next.linkId,
-          durationSeconds: duration,
-          pageIndex: pageIndex,
-          linkIndex: 1,
-          totalLinks: queueLength,
-          isAutoPlay: true,
-        );
-        debugPrint('[LinkQueue] ▶ Swapping to next (after error): ${next.url} (${duration}s)');
-        activeSessionNotifier.value = newSession;
-        _sessionController.add(newSession);
-        return;
-      }
-    }
-
-    // Queue empty during autoplay — fetch fresh links from API and continue if not in break time
     if (wasAutoPlay && !isFeedBreakActive) {
+      if (hasQueuedLinks) {
+        final next = peekNext();
+        if (next != null) {
+          final duration = randomViewDurationSeconds;
+          final newSession = ActiveViewSession(
+            url: next.url,
+            linkId: next.linkId,
+            durationSeconds: duration,
+            pageIndex: pageIndex,
+            linkIndex: 1,
+            totalLinks: queueLength,
+            isAutoPlay: true,
+          );
+          debugPrint('[LinkQueue] ▶ Swapping to next (after error): ${next.url} (${duration}s)');
+          activeSessionNotifier.value = newSession;
+          _sessionController.add(newSession);
+          return;
+        }
+      }
+
+      // Queue empty during autoplay — fetch fresh links from API and continue if not in break time
       _fetchAndContinueAutoPlay(pageIndex);
       return;
     }

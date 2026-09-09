@@ -438,27 +438,43 @@ class _FinanceScreenBodyState extends State<_FinanceScreenBody> {
             _buildDateSelectionCard(context, dailyDetail, cs, isDark),
             const SizedBox(height: 20),
 
-            // ── Subscribers Explorer Title & Search ──
+            // ── Subscribers Explorer Title & Pagination Bar ──
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Text(
-                  'Subscribers List',
-                  style: getBoldStyle(fontSize: 15, color: cs.onSurface),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Subscribers List',
+                      style: getBoldStyle(fontSize: 15, color: cs.onSurface),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: cs.primary.withValues(alpha: .1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        dailyDetail.totalCount > 0
+                            ? '${dailyDetail.totalCount}'
+                            : '${dailyDetail.subscribers.length}',
+                        style: getBoldStyle(fontSize: 11, color: cs.primary),
+                      ),
+                    ),
+                  ],
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: cs.primary.withValues(alpha: .1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    '${filteredSubscribers.length} / ${dailyDetail.subscribers.length}',
-                    style: getBoldStyle(fontSize: 11, color: cs.primary),
-                  ),
+                _buildHeaderPaginationBar(
+                  context,
+                  state,
+                  dailyDetail,
+                  cs,
+                  isDark,
                 ),
               ],
             ),
@@ -510,7 +526,7 @@ class _FinanceScreenBodyState extends State<_FinanceScreenBody> {
             // Subscribers List View (dynamic builder)
             if (filteredSubscribers.isEmpty)
               _buildEmptySubscribersPlaceholder(cs, isDark)
-            else
+            else ...[
               ListView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
@@ -520,8 +536,208 @@ class _FinanceScreenBodyState extends State<_FinanceScreenBody> {
                   return _SubscriberCard(sub: sub, cs: cs, isDark: isDark);
                 },
               ),
+              _buildSessionPagination(context, state, dailyDetail, cs, isDark),
+            ],
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildHeaderPaginationBar(
+    BuildContext context,
+    FinanceState state,
+    DailyDetailModel dailyDetail,
+    ColorScheme cs,
+    bool isDark,
+  ) {
+    final current = state.currentDetailPage;
+    final totalPages = dailyDetail.totalPages > 0 ? dailyDetail.totalPages : 1;
+    final hasNext = dailyDetail.subscribers.length >= dailyDetail.limit ||
+        current < totalPages;
+    final hasPrev = current > 1;
+    final isLoading = state.detailStatus == FinanceStatus.loading;
+
+    if (!hasPrev && !hasNext && dailyDetail.subscribers.length < dailyDetail.limit) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: isDark
+            ? cs.surfaceContainerHighest.withValues(alpha: 0.5)
+            : cs.primary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: cs.primary.withValues(alpha: 0.15),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: hasPrev && !isLoading
+                ? () {
+                    context.read<FinanceBloc>().add(
+                          LoadDailyDetail(
+                            date: state.activeDetailDate,
+                            namespace: _selectedNamespace,
+                            page: current - 1,
+                          ),
+                        );
+                  }
+                : null,
+            borderRadius: BorderRadius.circular(14),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Icon(
+                Icons.chevron_left_rounded,
+                size: 20,
+                color: hasPrev && !isLoading
+                    ? cs.primary
+                    : cs.onSurface.withValues(alpha: 0.25),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Text(
+              dailyDetail.totalPages > 0
+                  ? '$current / ${dailyDetail.totalPages}'
+                  : 'Page $current',
+              style: getBoldStyle(
+                fontSize: 12,
+                color: cs.primary,
+              ),
+            ),
+          ),
+          InkWell(
+            onTap: hasNext && !isLoading
+                ? () {
+                    context.read<FinanceBloc>().add(
+                          LoadDailyDetail(
+                            date: state.activeDetailDate,
+                            namespace: _selectedNamespace,
+                            page: current + 1,
+                          ),
+                        );
+                  }
+                : null,
+            borderRadius: BorderRadius.circular(14),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Icon(
+                Icons.chevron_right_rounded,
+                size: 20,
+                color: hasNext && !isLoading
+                    ? cs.primary
+                    : cs.onSurface.withValues(alpha: 0.25),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSessionPagination(
+    BuildContext context,
+    FinanceState state,
+    DailyDetailModel dailyDetail,
+    ColorScheme cs,
+    bool isDark,
+  ) {
+    final current = state.currentDetailPage;
+    final hasNext = dailyDetail.subscribers.length >= dailyDetail.limit ||
+        current < dailyDetail.totalPages;
+    final hasPrev = current > 1;
+
+    if (!hasPrev && !hasNext && dailyDetail.subscribers.length < dailyDetail.limit) {
+      return const SizedBox.shrink();
+    }
+
+    final pages = <int>[];
+    if (current > 2) pages.add(current - 2);
+    if (current > 1) pages.add(current - 1);
+    pages.add(current);
+    if (hasNext) pages.add(current + 1);
+    if (current + 1 < dailyDetail.totalPages) {
+      pages.add(current + 2);
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 20, bottom: 12),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          IconButton(
+            onPressed: hasPrev && state.detailStatus != FinanceStatus.loading
+                ? () {
+                    context.read<FinanceBloc>().add(
+                          LoadDailyDetail(
+                            date: state.activeDetailDate,
+                            namespace: _selectedNamespace,
+                            page: current - 1,
+                          ),
+                        );
+                  }
+                : null,
+            icon: const Icon(Icons.chevron_left_rounded),
+            color: cs.primary,
+          ),
+          ...pages.map(
+            (p) => InkWell(
+              onTap: (p != current && state.detailStatus != FinanceStatus.loading)
+                  ? () {
+                      context.read<FinanceBloc>().add(
+                            LoadDailyDetail(
+                              date: state.activeDetailDate,
+                              namespace: _selectedNamespace,
+                              page: p,
+                            ),
+                          );
+                    }
+                  : null,
+              borderRadius: BorderRadius.circular(20),
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                width: 38,
+                height: 38,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: p == current ? cs.primary : Colors.transparent,
+                  border: p != current
+                      ? Border.all(color: cs.onSurface.withValues(alpha: 0.12))
+                      : null,
+                ),
+                child: Text(
+                  '$p',
+                  style: getMediumStyle(
+                    fontSize: 13,
+                    color: p == current ? Colors.white : cs.onSurface,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            onPressed: hasNext && state.detailStatus != FinanceStatus.loading
+                ? () {
+                    context.read<FinanceBloc>().add(
+                          LoadDailyDetail(
+                            date: state.activeDetailDate,
+                            namespace: _selectedNamespace,
+                            page: current + 1,
+                          ),
+                        );
+                  }
+                : null,
+            icon: const Icon(Icons.chevron_right_rounded),
+            color: cs.primary,
+          ),
+        ],
       ),
     );
   }

@@ -38,7 +38,7 @@ class LinkQueueOverlay extends StatelessWidget {
         }
 
         return _FullDisplayWebView(
-          key: ValueKey('full_display_${session.linkId}'),
+          key: ValueKey('full_display_${session.sessionId}'),
           session: session,
           isPipMode: isPipMode,
           onPauseAutoPlay: onPauseAutoPlay,
@@ -194,7 +194,7 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (url) {
-            if (mounted) {
+            if (mounted && !_isPageReady) {
               setState(() {
                 _isLoading = true;
               });
@@ -277,11 +277,11 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
           controller: _controller.platform,
           displayWithHybridComposition: false,
         ),
-        key: ValueKey('webview_${widget.session.linkId}'),
+        key: ValueKey('webview_${widget.session.sessionId}'),
       );
     } else {
       _webViewWidget = WebViewWidget(
-        key: ValueKey('webview_${widget.session.linkId}'),
+        key: ValueKey('webview_${widget.session.sessionId}'),
         controller: _controller,
       );
     }
@@ -302,7 +302,8 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
   @override
   void didUpdateWidget(covariant _FullDisplayWebView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.session.linkId != widget.session.linkId ||
+    if (oldWidget.session.sessionId != widget.session.sessionId ||
+        oldWidget.session.linkId != widget.session.linkId ||
         oldWidget.session.url != widget.session.url) {
       _remainingSeconds = widget.session.durationSeconds;
       _startLoad();
@@ -369,6 +370,7 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
     _isLoading = true;
     _isPageReady = false;
     _isCompleted = false;
+    _remainingSeconds = widget.session.durationSeconds;
 
     _loadTimeoutTimer?.cancel();
     _masterTimeoutTimer?.cancel();
@@ -382,11 +384,11 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
       }
     });
 
-    // ── Page load timeout (15s) ──
-    _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
+    // ── Page load timeout (12s) ──
+    _loadTimeoutTimer = Timer(const Duration(seconds: 12), () {
       if (!_isPageReady && !_isCompleted && mounted) {
         debugPrint(
-          '[FullWebView] ⏰ Load timed out after 15s — starting countdown anyway',
+          '[FullWebView] ⏰ Load timed out after 12s — starting countdown anyway',
         );
         if (mounted) {
           setState(() {
@@ -431,13 +433,14 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
         return;
       }
 
-      setState(() {
-        if (_remainingSeconds > 0) {
+      if (_remainingSeconds > 1) {
+        setState(() {
           _remainingSeconds--;
-        }
-      });
-
-      if (_remainingSeconds <= 0) {
+        });
+      } else {
+        setState(() {
+          _remainingSeconds = 0;
+        });
         timer.cancel();
         _onSessionFinished();
       }
