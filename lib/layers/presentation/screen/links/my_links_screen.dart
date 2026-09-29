@@ -6,7 +6,6 @@ import 'package:adnetwork/layers/presentation/widget/gradient_button.dart';
 import 'package:adnetwork/layers/presentation/widget/show_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:intl/intl.dart';
 import 'package:toastification/toastification.dart';
 
 class MyLinksScreen extends StatelessWidget {
@@ -254,12 +253,7 @@ class MyLinksScreen extends StatelessWidget {
                                                 ),
                                                 const SizedBox(width: 4),
                                                 Text(
-                                                  DateFormat(
-                                                    'dd MMM yyyy',
-                                                  ).format(
-                                                    link.publishedDate ??
-                                                        DateTime.now(),
-                                                  ),
+                                                  link.formattedDateOnly,
                                                   style: getRegularStyle(
                                                     fontSize: 12,
                                                     color: cs.onSurface

@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:adnetwork/config/theme/styles_manager.dart';
 import 'package:adnetwork/core/services/token_storage.dart';
+import 'package:adnetwork/core/services/adsterra_storage.dart';
+import 'package:adnetwork/layers/presentation/widget/adsterra_api_key_dialog.dart';
 import 'package:adnetwork/config/theme/routes_config.dart';
 import 'package:adnetwork/core/functions/navigator.dart';
 import 'package:adnetwork/layers/data/repo/remote/auth_repository.dart';
@@ -223,6 +225,15 @@ class _LoginScreenState extends State<LoginScreen>
 
               context.read<ProfileBloc>().add(const LoadProfile());
               TokenStorage.instance.resetAutoplayFlagsOnLogin();
+
+              // Check Adsterra API key in Hive
+              final hasAdsterraKey = await AdsterraStorage.instance.hasApiKey();
+              if (!hasAdsterraKey && context.mounted) {
+                await AdsterraApiKeyDialog.show(
+                  context,
+                  isDismissible: false,
+                );
+              }
 
               final config = MobileConfigManager.instance.config;
               if (config.campaignMust == "1" || config.campaignMust == "1") {

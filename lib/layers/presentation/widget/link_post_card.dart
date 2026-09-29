@@ -3,7 +3,6 @@ import 'package:adnetwork/config/theme/styles_manager.dart';
 import 'package:adnetwork/layers/data/model/link_model.dart';
 
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 /// Redesigned link post card matching the app's feed style.
 class LinkPostCard extends StatelessWidget {
@@ -113,7 +112,7 @@ class LinkPostCard extends StatelessWidget {
                             ),
                             const SizedBox(width: 4),
                             Text(
-                              'Published : ${DateFormat('dd MMM yyyy, hh:mm a').format(link.publishedDate ?? DateTime.now())}',
+                              'Published : ${link.formattedPublishedDate}',
                               style: getRegularStyle(
                                 fontSize: 11,
                                 color: cs.onSurface.withValues(alpha: .45),
@@ -324,7 +323,7 @@ class LinkPostCard extends StatelessWidget {
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
-                          'Published: ${DateFormat('dd MMM yyyy, hh:mm a').format(link.publishedDate ?? DateTime.now())}',
+                          'Published: ${link.formattedPublishedDate}',
                           style: getMediumStyle(
                             fontSize: 11,
                             color: cs.onSurface.withValues(alpha: 0.5),
@@ -406,8 +405,8 @@ class LinkPostCard extends StatelessWidget {
                               ? cs.onSurface.withValues(alpha: .25)
                               : cs.onSurface.withValues(alpha: .45),
                         ),
-                        // Show countdown when cooling down
-                        if (isCoolingDown) ...[
+                        // Show countdown ONLY on cards that have NOT been liked yet
+                        if (!link.isLiked && likeCooldownSeconds > 0) ...[
                           const SizedBox(width: 6),
                           Text(
                             '${likeCooldownSeconds}s',

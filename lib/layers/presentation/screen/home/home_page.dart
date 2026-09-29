@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:adnetwork/config/theme/routes_config.dart';
 import 'package:adnetwork/config/theme/styles_manager.dart';
 import 'package:adnetwork/core/services/token_storage.dart';
 import 'package:adnetwork/core/services/vpn_dns_checker.dart';
@@ -204,7 +205,7 @@ class HomePageState extends State<HomePage> {
 
   void _startVpnDnsCheck() {
     _vpnDnsCheckTimer?.cancel();
-    _vpnDnsCheckTimer = Timer.periodic(const Duration(seconds: 2), (
+    _vpnDnsCheckTimer = Timer.periodic(const Duration(seconds: 10), (
       timer,
     ) async {
       final allowDns = MobileConfigManager.instance.config.allowDns;
@@ -547,6 +548,30 @@ class HomePageState extends State<HomePage> {
                                       },
                                     ),
                                     _Item(
+                                      icon: Icons.hub_rounded,
+                                      label: 'Adsterra Network',
+                                      active: false,
+                                      onTap: () {
+                                        Navigator.pop(context);
+                                        Navigator.pushNamed(
+                                          context,
+                                          Routes.adsterraDashboard,
+                                        );
+                                      },
+                                    ),
+                                    _Item(
+                                      icon: Icons.emoji_events_rounded,
+                                      label: 'Leaderboard',
+                                      active: false,
+                                      onTap: () {
+                                        Navigator.pop(context);
+                                        Navigator.pushNamed(
+                                          context,
+                                          Routes.leaderboard,
+                                        );
+                                      },
+                                    ),
+                                    _Item(
                                       icon: Icons.settings_rounded,
                                       label: 'Settings',
                                       active: false,
@@ -692,7 +717,7 @@ class HomePageState extends State<HomePage> {
                             Padding(
                               padding: const EdgeInsets.only(bottom: 24),
                               child: Text(
-                                'Ad Network v1.0.18',
+                                'Ad Network v1.0.19',
                                 style: getRegularStyle(
                                   fontSize: 11,
                                   color: cs.onSurface.withValues(alpha: .25),

@@ -17,6 +17,14 @@ class ToggleLike extends FeedEvent {
   List<Object?> get props => [linkId];
 }
 
+/// Optimistically mark a link as liked in the UI when like is given and enqueued.
+class MarkLinkLiked extends FeedEvent {
+  final String linkId;
+  const MarkLinkLiked(this.linkId);
+  @override
+  List<Object?> get props => [linkId];
+}
+
 class RefreshFeed extends FeedEvent {
   const RefreshFeed();
 }

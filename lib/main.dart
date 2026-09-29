@@ -13,8 +13,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-
-import 'package:adnetwork/core/services/pip_service.dart';
+import 'package:adnetwork/core/services/pip_service.dart';  
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();

@@ -1,3 +1,5 @@
+import 'package:intl/intl.dart';
+
 class LinkModel {
   final String? id;
   final String? userId;
@@ -13,6 +15,23 @@ class LinkModel {
   int viewCount;
   bool isLiked;
   String? status;
+
+  String? _formattedPublishedDate;
+  String? _formattedDateOnly;
+
+  String get formattedPublishedDate {
+    if (_formattedPublishedDate != null) return _formattedPublishedDate!;
+    final date = publishedDate ?? DateTime.now();
+    _formattedPublishedDate = DateFormat('dd MMM yyyy, hh:mm a').format(date);
+    return _formattedPublishedDate!;
+  }
+
+  String get formattedDateOnly {
+    if (_formattedDateOnly != null) return _formattedDateOnly!;
+    final date = publishedDate ?? DateTime.now();
+    _formattedDateOnly = DateFormat('dd MMM yyyy').format(date);
+    return _formattedDateOnly!;
+  }
 
   LinkModel({
     this.id,

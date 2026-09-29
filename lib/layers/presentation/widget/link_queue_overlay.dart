@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:adnetwork/core/services/link_queue_manager.dart';
@@ -27,21 +26,62 @@ class LinkQueueOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<ActiveViewSession?>(
-      valueListenable: LinkQueueManager.instance.activeSessionNotifier,
-      builder: (context, session, _) {
-        if (session == null) {
-          if (isPipMode) {
-            return const _PipIdleOverlay();
-          }
-          return const SizedBox.shrink();
-        }
+    // In non-PiP mode, ad display is handled by BottomDualWebViewBar.
+    if (!isPipMode) {
+      return const SizedBox.shrink();
+    }
 
-        return _FullDisplayWebView(
-          key: ValueKey('full_display_${session.sessionId}'),
-          session: session,
-          isPipMode: isPipMode,
-          onPauseAutoPlay: onPauseAutoPlay,
+    return ValueListenableBuilder<ActiveViewSession?>(
+      valueListenable: LinkQueueManager.instance.slot1SessionNotifier,
+      builder: (context, session1, _) {
+        return ValueListenableBuilder<ActiveViewSession?>(
+          valueListenable: LinkQueueManager.instance.slot2SessionNotifier,
+          builder: (context, session2, _) {
+            if (session1 == null && session2 == null) {
+              return const _PipIdleOverlay();
+            }
+
+            // 2 links available: split vertically into 2 slots
+            if (session1 != null && session2 != null) {
+              return Column(
+                children: [
+                  Expanded(
+                    child: _FullDisplayWebView(
+                      key: ValueKey('full_display_slot1_${session1.sessionId}'),
+                      session: session1,
+                      slotIndex: 1,
+                      isPipMode: true,
+                      onPauseAutoPlay: onPauseAutoPlay,
+                    ),
+                  ),
+                  Container(
+                    height: 2,
+                    color: const Color(0xFF6366F1),
+                  ),
+                  Expanded(
+                    child: _FullDisplayWebView(
+                      key: ValueKey('full_display_slot2_${session2.sessionId}'),
+                      session: session2,
+                      slotIndex: 2,
+                      isPipMode: true,
+                      onPauseAutoPlay: onPauseAutoPlay,
+                    ),
+                  ),
+                ],
+              );
+            }
+
+            // 1 link available: show single slot occupying full PiP window
+            final activeSession = session1 ?? session2!;
+            final activeSlot = session1 != null ? 1 : 2;
+            return _FullDisplayWebView(
+              key: ValueKey('full_display_slot${activeSlot}_${activeSession.sessionId}'),
+              session: activeSession,
+              slotIndex: activeSlot,
+              isPipMode: true,
+              onPauseAutoPlay: onPauseAutoPlay,
+            );
+          },
         );
       },
     );
@@ -154,12 +194,14 @@ class _PipIdleOverlayState extends State<_PipIdleOverlay> {
 
 class _FullDisplayWebView extends StatefulWidget {
   final ActiveViewSession session;
+  final int? slotIndex;
   final bool isPipMode;
   final VoidCallback? onPauseAutoPlay;
 
   const _FullDisplayWebView({
     super.key,
     required this.session,
+    this.slotIndex,
     required this.isPipMode,
     this.onPauseAutoPlay,
   });
@@ -190,7 +232,10 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
 
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFF0F172A))
+      ..setBackgroundColor(Colors.white)
+      ..setOnJavaScriptAlertDialog((request) async {})
+      ..setOnJavaScriptConfirmDialog((request) async => true)
+      ..setOnJavaScriptTextInputDialog((request) async => '')
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (url) {
@@ -199,6 +244,7 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
                 _isLoading = true;
               });
             }
+            _injectAdViewability();
           },
           onPageFinished: (url) {
             if (mounted) {
@@ -206,6 +252,7 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
                 _isLoading = false;
               });
             }
+            _injectAdViewability();
             _handlePageLoaded(url);
           },
           onWebResourceError: (error) {
@@ -245,12 +292,15 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
             if (uri == null) return NavigationDecision.prevent;
 
             final scheme = uri.scheme.toLowerCase();
-            if (scheme == 'http' || scheme == 'https') {
+            if (scheme == 'http' ||
+                scheme == 'https' ||
+                scheme == 'about' ||
+                scheme == 'data' ||
+                scheme == 'blob') {
               return NavigationDecision.navigate;
             }
 
-            // Cleanly launch external application schemes (intent, market, whatsapp, etc.)
-            _launchExternalUri(uri);
+            // Silently block external app schemes (intent, market, tel, etc.)
             return NavigationDecision.prevent;
           },
         ),
@@ -262,6 +312,13 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
             _controller.platform as AndroidWebViewController;
         androidController.setMixedContentMode(MixedContentMode.alwaysAllow);
         androidController.setMediaPlaybackRequiresUserGesture(false);
+        androidController.setOnPlatformPermissionRequest(
+          (request) => request.deny(),
+        );
+        androidController.setGeolocationPermissionsPromptCallbacks(
+          onShowPrompt: (request) async =>
+              const GeolocationPermissionsResponse(allow: false, retain: false),
+        );
 
         final cookieManager = WebViewCookieManager();
         if (cookieManager.platform is AndroidWebViewCookieManager) {
@@ -271,17 +328,18 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
       }
     }
 
+    final slotPrefix = widget.slotIndex != null ? 'slot_${widget.slotIndex}_' : '';
     if (Platform.isAndroid) {
       _webViewWidget = WebViewWidget.fromPlatformCreationParams(
         params: AndroidWebViewWidgetCreationParams(
           controller: _controller.platform,
           displayWithHybridComposition: false,
         ),
-        key: ValueKey('webview_${widget.session.sessionId}'),
+        key: ValueKey('webview_$slotPrefix${widget.session.sessionId}'),
       );
     } else {
       _webViewWidget = WebViewWidget(
-        key: ValueKey('webview_${widget.session.sessionId}'),
+        key: ValueKey('webview_$slotPrefix${widget.session.sessionId}'),
         controller: _controller,
       );
     }
@@ -289,15 +347,6 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
     _startLoad();
   }
 
-  Future<void> _launchExternalUri(Uri uri) async {
-    try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
-    } catch (e) {
-      debugPrint('[FullWebView] ⚠️ Could not launch external URI: $uri ($e)');
-    }
-  }
 
   @override
   void didUpdateWidget(covariant _FullDisplayWebView oldWidget) {
@@ -366,7 +415,29 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
         .catchError((_) {});
   }
 
-  void _startLoad() {
+  static String? _cachedCleanUserAgent;
+
+  Future<void> _applyCleanUserAgent() async {
+    try {
+      if (_cachedCleanUserAgent != null) {
+        await _controller.setUserAgent(_cachedCleanUserAgent);
+        return;
+      }
+      final rawUa = await _controller.getUserAgent();
+      if (rawUa != null && rawUa.isNotEmpty) {
+        final cleanUa = rawUa
+            .replaceAll('; wv', '')
+            .replaceAll(RegExp(r'Version\/4\.0\s*'), '');
+        _cachedCleanUserAgent = cleanUa;
+        await _controller.setUserAgent(cleanUa);
+        debugPrint('[FullWebView] 🌐 Cleaned Mobile Chrome UA applied: $cleanUa');
+      }
+    } catch (e) {
+      debugPrint('[FullWebView] ⚠️ Could not apply clean UA: $e');
+    }
+  }
+
+  void _startLoad() async {
     _isLoading = true;
     _isPageReady = false;
     _isCompleted = false;
@@ -400,6 +471,7 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
     });
 
     try {
+      await _applyCleanUserAgent();
       final uri = Uri.parse(widget.session.url);
       _controller.loadRequest(uri);
     } catch (e) {
@@ -414,12 +486,31 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
 
     _loadTimeoutTimer?.cancel();
 
+    _injectAdViewability();
+
     if (widget.isPipMode) {
       _injectPipViewport();
     }
 
     _applyBlur(webViewBlurIntensityNotifier.value);
     _startCountdown();
+  }
+
+  void _injectAdViewability() {
+    try {
+      _controller.runJavaScript('''
+(function() {
+  try {
+    Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+    Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+    Object.defineProperty(document, 'webkitVisibilityState', { get: () => 'visible', configurable: true });
+    Object.defineProperty(document, 'webkitHidden', { get: () => false, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+  } catch (e) {}
+})();
+''').catchError((_) {});
+    } catch (_) {}
   }
 
   void _startCountdown() {
@@ -454,7 +545,14 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
     _loadTimeoutTimer?.cancel();
     _masterTimeoutTimer?.cancel();
 
-    LinkQueueManager.instance.onSessionFinished();
+    if (widget.slotIndex != null) {
+      LinkQueueManager.instance.onSlotFinished(
+        widget.slotIndex!,
+        widget.session.linkId,
+      );
+    } else {
+      LinkQueueManager.instance.onSessionFinished();
+    }
   }
 
   void _onSessionError() {
@@ -464,7 +562,14 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
     _loadTimeoutTimer?.cancel();
     _masterTimeoutTimer?.cancel();
 
-    LinkQueueManager.instance.onSessionError();
+    if (widget.slotIndex != null) {
+      LinkQueueManager.instance.onSlotError(
+        widget.slotIndex!,
+        widget.session.linkId,
+      );
+    } else {
+      LinkQueueManager.instance.onSessionError();
+    }
   }
 
   void _onCloseManually() {
@@ -477,7 +582,14 @@ class _FullDisplayWebViewState extends State<_FullDisplayWebView> {
       widget.onPauseAutoPlay?.call();
       LinkQueueManager.instance.requestPauseAutoPlay();
     }
-    LinkQueueManager.instance.cancelViewing(completeLike: false);
+    if (widget.slotIndex != null) {
+      LinkQueueManager.instance.onSlotFinished(
+        widget.slotIndex!,
+        widget.session.linkId,
+      );
+    } else {
+      LinkQueueManager.instance.cancelViewing(completeLike: false);
+    }
   }
 
   @override

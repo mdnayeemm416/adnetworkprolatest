@@ -25,11 +25,16 @@ class ApiEndpoints {
 
   // ──────────────────────────── Links ───────────────────────────
   static const String links = '/api/links';
+  static const String bulkLinks = '/api/links/bulk';
   static const String myLinks = '/api/mylinks';
   static String linkById(String id) => '/api/links/$id';
   static String toggleLike(String id) => '/api/links/$id/like';
   static String addComment(String id) => '/api/links/$id/comment';
   static String linkComments(String id) => '/api/links/$id/comments';
+
+  // ──────────────────────────── Adsterra & Leaderboard ──────────
+  static const String userAdsterraKey = '/api/user/adsterra-key';
+  static const String hourlyLeaderboard = '/api/leaderboard/hourly';
 
   // ──────────────────────────── Admin ───────────────────────────
   static const String adminUsers = '/api/admin/users';

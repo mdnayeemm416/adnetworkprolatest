@@ -7,6 +7,7 @@ import 'package:adnetwork/layers/presentation/controller/explore/explore_bloc.da
 import 'package:adnetwork/layers/data/repo/remote/user_repository.dart';
 import 'package:adnetwork/layers/presentation/widget/link_post_card.dart';
 import 'package:adnetwork/layers/presentation/widget/suggested_user_card.dart';
+import 'package:adnetwork/layers/presentation/widget/bottom_dual_webview_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:adnetwork/main.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -37,17 +38,20 @@ class FeedScreen extends StatefulWidget {
   State<FeedScreen> createState() => _FeedScreenState();
 }
 
-class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBindingObserver {
+class _FeedScreenState extends State<FeedScreen>
+    with RouteAware, WidgetsBindingObserver {
   late ScrollController _scrollController;
   StreamSubscription<String>? _completedLinkSub;
   StreamSubscription<void>? _autoPlayPauseSub;
   // ── Debounce timer for overlay opacity disk writes ──
   Timer? _opacityDebounceTimer;
+  Timer? _autoPlayNextStepTimer;
   bool _isAutoScrolling = false;
   final _pip = Pip();
   bool _isAutoLikeEnabled = false;
   bool _wasAutoplayEnabledBeforeBreak = false;
   int _lastFeedBreakCooldownSeconds = 0;
+  bool _isBottomBarExpanded = false;
 
   @override
   void initState() {
@@ -64,14 +68,19 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
     // Listen for completed link viewings — no longer drives autoplay advancement
     // (LinkQueueManager handles auto-advance internally). This is kept for any
     // UI refresh needs when a link is completed.
-    _completedLinkSub = LinkQueueManager.instance.completedLinkStream.listen((linkId) {
+    _completedLinkSub = LinkQueueManager.instance.completedLinkStream.listen((
+      linkId,
+    ) {
       // UI will update via BLoC state changes
     });
 
     // Listen for pause requests from the WebView overlay (e.g. user closed or tapped pause)
-    _autoPlayPauseSub = LinkQueueManager.instance.autoPlayPauseStream.listen((_) {
+    _autoPlayPauseSub = LinkQueueManager.instance.autoPlayPauseStream.listen((
+      _,
+    ) {
       if (mounted && _isAutoScrolling) {
-        final isBreak = LinkQueueManager.instance.isFeedBreakActive ||
+        final isBreak =
+            LinkQueueManager.instance.isFeedBreakActive ||
             (context.read<FeedBloc>().state.feedBreakCooldownSeconds > 0);
         _stopAutoplayTemporarily(isBreak: isBreak);
       }
@@ -128,7 +137,8 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
   }
 
   Future<void> _loadAutoplayResumeStatus() async {
-    final resume = await TokenStorage.instance.getFeedAutoplayResumeAfterBreak();
+    final resume = await TokenStorage.instance
+        .getFeedAutoplayResumeAfterBreak();
     if (mounted && resume) {
       setState(() {
         _wasAutoplayEnabledBeforeBreak = true;
@@ -178,6 +188,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
     _completedLinkSub?.cancel();
     _autoPlayPauseSub?.cancel();
     _opacityDebounceTimer?.cancel();
+    _autoPlayNextStepTimer?.cancel();
     _scrollController.dispose();
     _pip.dispose();
     super.dispose();
@@ -207,16 +218,18 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
       _processAutoPlay();
     } else {
       _wasAutoplayEnabledBeforeBreak = false;
+      _autoPlayNextStepTimer?.cancel();
       TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(false);
-      LinkQueueManager.instance.cancelViewing(completeLike: false);
     }
   }
 
   void _stopAutoplayTemporarily({bool isBreak = false}) {
     if (_isAutoScrolling) {
+      _autoPlayNextStepTimer?.cancel();
       if (isBreak) {
         _wasAutoplayEnabledBeforeBreak = true;
         TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(true);
+        LinkQueueManager.instance.cancelViewing(completeLike: false);
       } else {
         _wasAutoplayEnabledBeforeBreak = false;
         TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(false);
@@ -225,7 +238,6 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
       setState(() {
         _isAutoScrolling = false;
       });
-      LinkQueueManager.instance.cancelViewing(completeLike: false);
     }
   }
 
@@ -235,18 +247,21 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
     if (widget.isActive && !oldWidget.isActive) {
       _checkAutoplayPersistentStatus();
     } else if (!widget.isActive && oldWidget.isActive) {
-      final isBreak = LinkQueueManager.instance.isFeedBreakActive ||
+      final isBreak =
+          LinkQueueManager.instance.isFeedBreakActive ||
           context.read<FeedBloc>().state.feedBreakCooldownSeconds > 0;
       _stopAutoplayTemporarily(isBreak: isBreak);
     }
   }
 
   Future<void> _handleBreakTimeEnded(FeedState state) async {
-    final resumeAfterBreak =
-        await TokenStorage.instance.getFeedAutoplayResumeAfterBreak();
+    final resumeAfterBreak = await TokenStorage.instance
+        .getFeedAutoplayResumeAfterBreak();
     final shouldResume = _wasAutoplayEnabledBeforeBreak || resumeAfterBreak;
 
-    debugPrint('[FeedScreen] ☕ Break time ended. Should resume autoplay: $shouldResume');
+    debugPrint(
+      '[FeedScreen] ☕ Break time ended. Should resume autoplay: $shouldResume',
+    );
 
     _wasAutoplayEnabledBeforeBreak = false;
     await TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(false);
@@ -256,14 +271,6 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
       setState(() {
         _isAutoScrolling = true;
       });
-
-      // Ensure Hive queue has links if current state has unliked ones
-      if (!LinkQueueManager.instance.hasQueuedLinks) {
-        final unliked = state.links.where((l) => !l.isLiked).toList();
-        if (unliked.isNotEmpty) {
-          await LinkQueueManager.instance.populateQueue(state.links);
-        }
-      }
 
       Future.delayed(const Duration(milliseconds: 600), () {
         if (mounted && _isAutoScrolling) {
@@ -278,8 +285,8 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
     final feedBloc = context.read<FeedBloc>();
     final state = feedBloc.state;
 
-    final resumeAfterBreak =
-        await TokenStorage.instance.getFeedAutoplayResumeAfterBreak();
+    final resumeAfterBreak = await TokenStorage.instance
+        .getFeedAutoplayResumeAfterBreak();
     final wasEnabledBefore = _wasAutoplayEnabledBeforeBreak || resumeAfterBreak;
 
     // If break has ended and autoplay was active before break, resume it
@@ -296,6 +303,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
         await TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(true);
       }
       if (_isAutoScrolling) {
+        _autoPlayNextStepTimer?.cancel();
         setState(() {
           _isAutoScrolling = false;
         });
@@ -313,19 +321,17 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
       }
     } else {
       if (_isAutoScrolling) {
+        _autoPlayNextStepTimer?.cancel();
         setState(() {
           _isAutoScrolling = false;
         });
-        LinkQueueManager.instance.cancelViewing(completeLike: false);
       }
     }
   }
 
   void _processAutoPlay() {
+    _autoPlayNextStepTimer?.cancel();
     if (!mounted || !_isAutoScrolling) return;
-
-    // If already viewing in full screen, let that session complete
-    if (LinkQueueManager.instance.isViewing) return;
 
     final feedBloc = context.read<FeedBloc>();
     final state = feedBloc.state;
@@ -339,43 +345,94 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
       return;
     }
 
-    // Check the Hive queue for the next link
-    if (!LinkQueueManager.instance.hasQueuedLinks) {
-      // No more links in Hive queue — advance to NEXT page
+    // If there is an active like cooldown (e.g. 1s or 4s cooldown)
+    if (state.likeCooldownSeconds > 0) {
+      _autoPlayNextStepTimer = Timer(
+        Duration(milliseconds: (state.likeCooldownSeconds * 1000) + 500),
+        () {
+          if (mounted && _isAutoScrolling) {
+            context.read<FeedBloc>().add(const CheckFeedCooldowns());
+            _processAutoPlay();
+          }
+        },
+      );
+      return;
+    }
+
+    // Find the next unliked link on the current page
+    final unlikedIndex = state.links.indexWhere((l) => !l.isLiked);
+
+    if (unlikedIndex == -1) {
+      // All links on this page have been liked — advance to NEXT page
       debugPrint(
-        '[AutoPlay] 🎉 Hive queue empty! Advancing to page ${state.currentPage + 1}',
+        '[AutoPlay] 🎉 All links on page ${state.currentPage} liked! Advancing to page ${state.currentPage + 1}',
       );
       feedBloc.add(ChangeFeedPage(state.currentPage + 1));
       return;
     }
 
-    // Peek at the next queued link from Hive
-    final nextLink = LinkQueueManager.instance.peekNext();
-    if (nextLink == null) return;
+    final targetLink = state.links[unlikedIndex];
 
-    // Find the index in the current state for scrolling purposes
-    final targetIndex = state.links.indexWhere((l) => l.id == nextLink.linkId);
-    if (targetIndex >= 0) {
-      _scrollToIndex(targetIndex);
-    }
+    // Smoothly glide to center the card on screen
+    _scrollToIndex(unlikedIndex);
 
-    LinkQueueManager.instance.startViewing(
-      url: nextLink.url,
-      linkId: nextLink.linkId,
-      pageIndex: state.currentPage,
-      linkIndex: 1,
-      totalLinks: LinkQueueManager.instance.queueLength,
-      isAutoPlay: true,
-    );
+    // Give the user comfortable, relaxed time (1800ms) to view the card before liking
+    _autoPlayNextStepTimer = Timer(const Duration(milliseconds: 1500), () {
+      if (!mounted || !_isAutoScrolling) return;
+
+      // 1. Instantly change the like icon in UI and trigger hold cooldown (2s normally, 4s after 4 likes)
+      if (targetLink.id != null) {
+        feedBloc.add(MarkLinkLiked(targetLink.id!));
+      }
+
+      // 2. Enqueue the URL to the queue for bottom dual webview playback.
+      // When the webview finishes displaying the link, ToggleLike & Like API are called.
+      if (targetLink.url != null &&
+          targetLink.url!.isNotEmpty &&
+          targetLink.id != null) {
+        LinkQueueManager.instance.enqueueLink(
+          url: targetLink.url!,
+          linkId: targetLink.id!,
+          isAutoPlay: true,
+        );
+      }
+
+      // 3. Keep viewport calmly focused on the current liked card so user sees the like
+      //    confirmation and cooldown timer ticking down smoothly without any sudden jump.
+
+      // 4. Hold timer matching the cooldown (2s normally, 4s after 4 likes) + relaxed 800ms pause
+      //    before smoothly gliding to the next card
+      final currentStreak = feedBloc.state.likeStreak;
+      final holdSeconds = (currentStreak % 4 == 0) ? 4 : 2;
+      _autoPlayNextStepTimer = Timer(
+        Duration(milliseconds: (holdSeconds * 1000) + 800),
+        () {
+          if (mounted && _isAutoScrolling) {
+            _processAutoPlay();
+          }
+        },
+      );
+    });
   }
 
   void _scrollToIndex(int index) {
     if (_scrollController.hasClients) {
-      final double targetOffset = 50.0 + (index * 280.0);
+      final viewportHeight = _scrollController.position.viewportDimension;
+      final maxScroll = _scrollController.position.maxScrollExtent;
+      const double headerHeight = 260.0;
+      const double cardHeight = 300.0;
+      // Position the card right at the vertical center of the screen
+      final double cardCenter =
+          headerHeight + (index * cardHeight) + (cardHeight / 2.0);
+      final double targetOffset = (cardCenter - (viewportHeight / 2.0)).clamp(
+        0.0,
+        maxScroll,
+      );
+  
       _scrollController.animateTo(
         targetOffset,
-        duration: const Duration(milliseconds: 800),
-        curve: Curves.easeInOut,
+        duration: const Duration(milliseconds: 900),
+        curve: Curves.easeInOutCubic,
       );
     }
   }
@@ -391,8 +448,10 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
         : '${mins.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
 
     final totalBreakSecs = (config.feedBreakTimeMinutes * 60).clamp(1, 86400);
-    final progress =
-        (fbState.feedBreakCooldownSeconds / totalBreakSecs).clamp(0.0, 1.0);
+    final progress = (fbState.feedBreakCooldownSeconds / totalBreakSecs).clamp(
+      0.0,
+      1.0,
+    );
 
     return Center(
       child: Container(
@@ -422,17 +481,10 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
                 color: cs.primary.withValues(alpha: 0.12),
                 shape: BoxShape.circle,
               ),
-              child: Icon(
-                Icons.coffee_rounded,
-                color: cs.primary,
-                size: 52,
-              ),
+              child: Icon(Icons.coffee_rounded, color: cs.primary, size: 52),
             ),
             const SizedBox(height: 24),
-            Text(
-              timeStr,
-              style: getBoldStyle(fontSize: 42, color: cs.primary),
-            ),
+            Text(timeStr, style: getBoldStyle(fontSize: 42, color: cs.primary)),
             const SizedBox(height: 16),
             Text(
               'ব্রেক টাইম চলছে',
@@ -482,9 +534,11 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
     final cs = Theme.of(context).colorScheme;
     final total = state.links.length;
     final completed = state.links.where((l) => l.isLiked).length;
-    final double progress =
-        total > 0 ? (completed / total).clamp(0.0, 1.0) : 0.0;
-    final breakLimit = MobileConfigManager.instance.config.breakTimeLinkCountInt;
+    final double progress = total > 0
+        ? (completed / total).clamp(0.0, 1.0)
+        : 0.0;
+    final breakLimit =
+        MobileConfigManager.instance.config.breakTimeLinkCountInt;
     final breakLikes = state.feedBreakLikesCount;
 
     return Container(
@@ -515,18 +569,11 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
             children: [
               Row(
                 children: [
-                  Icon(
-                    Icons.auto_stories_rounded,
-                    color: cs.primary,
-                    size: 20,
-                  ),
+                  Icon(Icons.auto_stories_rounded, color: cs.primary, size: 20),
                   const SizedBox(width: 8),
                   Text(
                     'Page ${state.currentPage} Overview',
-                    style: getBoldStyle(
-                      fontSize: 15,
-                      color: cs.onSurface,
-                    ),
+                    style: getBoldStyle(fontSize: 15, color: cs.onSurface),
                   ),
                 ],
               ),
@@ -586,10 +633,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
               if (completed == total && total > 0)
                 Text(
                   '✅ Page Complete',
-                  style: getBoldStyle(
-                    fontSize: 12,
-                    color: Colors.green,
-                  ),
+                  style: getBoldStyle(fontSize: 12, color: Colors.green),
                 ),
             ],
           ),
@@ -617,11 +661,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
               children: [
                 Row(
                   children: [
-                    Icon(
-                      Icons.coffee_outlined,
-                      size: 14,
-                      color: cs.primary,
-                    ),
+                    Icon(Icons.coffee_outlined, size: 14, color: cs.primary),
                     const SizedBox(width: 6),
                     Text(
                       'Break Progress:',
@@ -634,10 +674,7 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
                 ),
                 Text(
                   '$breakLikes / $breakLimit likes',
-                  style: getBoldStyle(
-                    fontSize: 11,
-                    color: cs.primary,
-                  ),
+                  style: getBoldStyle(fontSize: 11, color: cs.primary),
                 ),
               ],
             ),
@@ -659,15 +696,20 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
       listenWhen: (prev, curr) =>
           prev.status != curr.status ||
           prev.currentPage != curr.currentPage ||
-          prev.pageWaitSeconds != curr.pageWaitSeconds ||
-          prev.feedBreakCooldownSeconds != curr.feedBreakCooldownSeconds,
+          (prev.pageWaitSeconds > 0 && curr.pageWaitSeconds == 0) ||
+          (prev.feedBreakCooldownSeconds > 0 &&
+              curr.feedBreakCooldownSeconds == 0) ||
+          (prev.feedBreakCooldownSeconds == 0 &&
+              curr.feedBreakCooldownSeconds > 0),
       listener: (context, state) {
         // Track whether break time was active and has just ended
         final breakJustEnded =
-            _lastFeedBreakCooldownSeconds > 0 && state.feedBreakCooldownSeconds == 0;
+            _lastFeedBreakCooldownSeconds > 0 &&
+            state.feedBreakCooldownSeconds == 0;
 
         // If break just started while autoplaying, record intent to resume after break
-        if (_lastFeedBreakCooldownSeconds == 0 && state.feedBreakCooldownSeconds > 0) {
+        if (_lastFeedBreakCooldownSeconds == 0 &&
+            state.feedBreakCooldownSeconds > 0) {
           if (_isAutoScrolling) {
             _wasAutoplayEnabledBeforeBreak = true;
             TokenStorage.instance.saveFeedAutoplayResumeAfterBreak(true);
@@ -688,13 +730,19 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
             state.status == FeedStatus.loaded &&
             state.pageWaitSeconds == 0 &&
             state.nextCooldownSeconds == 0 &&
-            state.feedBreakCooldownSeconds == 0 &&
-            !LinkQueueManager.instance.isViewing) {
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted && _isAutoScrolling) {
-              _processAutoPlay();
-            }
-          });
+            state.feedBreakCooldownSeconds == 0) {
+          // Only trigger if another autoplay timer is not currently actively in-flight
+          if (_autoPlayNextStepTimer == null ||
+              !_autoPlayNextStepTimer!.isActive) {
+            Future.delayed(const Duration(milliseconds: 600), () {
+              if (mounted &&
+                  _isAutoScrolling &&
+                  (_autoPlayNextStepTimer == null ||
+                      !_autoPlayNextStepTimer!.isActive)) {
+                _processAutoPlay();
+              }
+            });
+          }
         }
       },
       buildWhen: (prev, curr) =>
@@ -704,7 +752,8 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
           // Show/hide like-button cooldown countdown on cards
           prev.likeCooldownSeconds != curr.likeCooldownSeconds ||
           // Switch between the top-level views
-          (prev.feedBreakCooldownSeconds > 0) != (curr.feedBreakCooldownSeconds > 0) ||
+          (prev.feedBreakCooldownSeconds > 0) !=
+              (curr.feedBreakCooldownSeconds > 0) ||
           (prev.nextCooldownSeconds > 0) != (curr.nextCooldownSeconds > 0) ||
           (prev.pageWaitSeconds > 0) != (curr.pageWaitSeconds > 0) ||
           prev.feedBreakLikesCount != curr.feedBreakLikesCount,
@@ -827,24 +876,28 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
                             child: CircularProgressIndicator(
                               value: pwState.pageWaitSeconds / 4.0,
                               strokeWidth: 6,
-                              backgroundColor: cs.primary.withValues(alpha: 0.1),
-                              valueColor:
-                                  AlwaysStoppedAnimation<Color>(cs.primary),
+                              backgroundColor: cs.primary.withValues(
+                                alpha: 0.1,
+                              ),
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                cs.primary,
+                              ),
                               strokeCap: StrokeCap.round,
                             ),
                           ),
                           Text(
                             '${pwState.pageWaitSeconds}',
-                            style:
-                                getBoldStyle(fontSize: 32, color: cs.primary),
+                            style: getBoldStyle(
+                              fontSize: 32,
+                              color: cs.primary,
+                            ),
                           ),
                         ],
                       ),
                       const SizedBox(height: 20),
                       Text(
                         'অপেক্ষা করুন...',
-                        style:
-                            getBoldStyle(fontSize: 20, color: cs.onSurface),
+                        style: getBoldStyle(fontSize: 20, color: cs.onSurface),
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 8),
@@ -1020,7 +1073,8 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
                             const SizedBox(height: 12),
                             InkWell(
                               onTap: () {
-                                final homeState = context.findAncestorStateOfType<HomePageState>();
+                                final homeState = context
+                                    .findAncestorStateOfType<HomePageState>();
                                 if (homeState != null) {
                                   homeState.setIndex(2);
                                 } else {
@@ -1144,14 +1198,37 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
                               );
                               return;
                             }
+                            if (state.likeCooldownSeconds > 0) {
+                              context.read<FeedBloc>().add(
+                                const CheckFeedCooldowns(),
+                              );
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    'অনুগ্রহ করে ${state.likeCooldownSeconds} সেকেন্ড অপেক্ষা করুন।',
+                                  ),
+                                  duration: const Duration(seconds: 1),
+                                  backgroundColor: Colors.orange.shade800,
+                                ),
+                              );
+                              return;
+                            }
                             if (link.isLiked) return;
-                            if (link.url != null && link.url!.isNotEmpty) {
-                              LinkQueueManager.instance.startViewing(
+                            // 1. Instantly change like icon in UI & trigger hold cooldown
+                            if (link.id != null) {
+                              context.read<FeedBloc>().add(
+                                MarkLinkLiked(link.id!),
+                              );
+                            }
+
+                            // 2. Enqueue URL to bottom dual webview queue.
+                            // When display completes in webview, ToggleLike & Like API are called.
+                            if (link.url != null &&
+                                link.url!.isNotEmpty &&
+                                link.id != null) {
+                              LinkQueueManager.instance.enqueueLink(
                                 url: link.url!,
-                                linkId: link.id ?? '',
-                                pageIndex: state.currentPage,
-                                linkIndex: index + 1,
-                                totalLinks: state.links.length,
+                                linkId: link.id!,
                                 isAutoPlay: false,
                               );
                             }
@@ -1534,20 +1611,53 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
           child: Stack(
             children: [
               content,
-              if (showFab)
-                Positioned(
-                  right: 16,
-                  bottom: 24,
-                  // Extracted into its own StatefulWidget so toggling the
-                  // opacity slider or FAB state does NOT rebuild the
-                  // BLoC-driven feed tree above it.
-                  child: _FeedFabColumn(
-                    pip: _pip,
-                    isAutoScrolling: _isAutoScrolling,
-                    isAutoLikeEnabled: _isAutoLikeEnabled,
-                    onToggleAutoPlay: () => _toggleAutoPlay(state),
-                    onShowSubscription: () => _showSubscriptionDialog(context),
-                  ),
+              // ── Bottom Dual-Stacked WebView Bar (Expandable Bottom Sheet) ──
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: BottomDualWebViewBar(
+                  onPauseAutoPlay: () => _stopAutoplayTemporarily(),
+                  onExpandedChanged: (isExpanded) {
+                    if (_isBottomBarExpanded != isExpanded) {
+                      setState(() {
+                        _isBottomBarExpanded = isExpanded;
+                      });
+                    }
+                  },
+                ),
+              ),
+              // ── Floating Autoplay & Controls (Floats directly above WebViews on Left side) ──
+              if (showFab && !_isBottomBarExpanded)
+                ValueListenableBuilder<ActiveViewSession?>(
+                  valueListenable:
+                      LinkQueueManager.instance.slot1SessionNotifier,
+                  builder: (context, slot1, _) {
+                    return ValueListenableBuilder<ActiveViewSession?>(
+                      valueListenable:
+                          LinkQueueManager.instance.slot2SessionNotifier,
+                      builder: (context, slot2, _) {
+                        double webviewHeight = 0;
+                        if (slot1 != null) webviewHeight += 76;
+                        if (slot2 != null) webviewHeight += 76;
+
+                        return AnimatedPositioned(
+                          duration: const Duration(milliseconds: 250),
+                          curve: Curves.easeOutCubic,
+                          left: 16,
+                          bottom: 16 + webviewHeight,
+                          child: _FeedFabColumn(
+                            pip: _pip,
+                            isAutoScrolling: _isAutoScrolling,
+                            isAutoLikeEnabled: _isAutoLikeEnabled,
+                            onToggleAutoPlay: () => _toggleAutoPlay(state),
+                            onShowSubscription: () =>
+                                _showSubscriptionDialog(context),
+                          ),
+                        );
+                      },
+                    );
+                  },
                 ),
             ],
           ),
@@ -1970,17 +2080,22 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
             const SizedBox(height: 16),
             if (state.instruction != null && state.instruction!.isNotEmpty)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 decoration: BoxDecoration(
                   color: cs.primary.withValues(alpha: 0.05),
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                    color: cs.primary.withValues(alpha: 0.1),
-                  ),
+                  border: Border.all(color: cs.primary.withValues(alpha: 0.1)),
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.info_outline_rounded, color: cs.primary, size: 20),
+                    Icon(
+                      Icons.info_outline_rounded,
+                      color: cs.primary,
+                      size: 20,
+                    ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
@@ -2011,7 +2126,8 @@ class _FeedScreenState extends State<FeedScreen> with RouteAware, WidgetsBinding
                 ),
               ),
               onPressed: () {
-                final homeState = context.findAncestorStateOfType<HomePageState>();
+                final homeState = context
+                    .findAncestorStateOfType<HomePageState>();
                 if (homeState != null) {
                   homeState.setIndex(2);
                 } else {
@@ -2089,45 +2205,41 @@ class _FeedFabColumn extends StatelessWidget {
 
     return Column(
       mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.end,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // ── PIP button (only when auto-play is running) ──
-        if (isAutoScrolling) ...[
-          FloatingActionButton(
-            heroTag: 'pipBtn',
-            onPressed: () async {
-              try {
-                final isSupported = await pip.isSupported();
-                if (isSupported) {
-                  await pip.start();
-                } else {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: const Text(
-                          'PIP is not supported on this device',
-                        ),
-                        backgroundColor:
-                            Theme.of(context).colorScheme.error,
-                      ),
-                    );
-                  }
-                }
-              } catch (e) {
-                debugPrint('Failed to start PIP: $e');
-              }
-            },
-            backgroundColor: Colors.blueAccent,
-            foregroundColor: Colors.white,
-            mini: true,
-            tooltip: 'Picture-in-Picture',
-            child: const Icon(
-              Icons.picture_in_picture_alt_rounded,
-              size: 20,
-            ),
-          ),
-          const SizedBox(height: 12),
-        ],
+        // if (isAutoScrolling) ...[
+        //   FloatingActionButton(
+        //     heroTag: 'pipBtn',
+        //     onPressed: () async {
+        //       try {
+        //         final isSupported = await pip.isSupported();
+        //         if (isSupported) {
+        //           await pip.start();
+        //         } else {
+        //           if (context.mounted) {
+        //             ScaffoldMessenger.of(context).showSnackBar(
+        //               SnackBar(
+        //                 content: const Text(
+        //                   'PIP is not supported on this device',
+        //                 ),
+        //                 backgroundColor: Theme.of(context).colorScheme.error,
+        //               ),
+        //             );
+        //           }
+        //         }
+        //       } catch (e) {
+        //         debugPrint('Failed to start PIP: $e');
+        //       }
+        //     },
+        //     backgroundColor: Colors.blueAccent,
+        //     foregroundColor: Colors.white,
+        //     mini: true,
+        //     tooltip: 'Picture-in-Picture',
+        //     child: const Icon(Icons.picture_in_picture_alt_rounded, size: 20),
+        //   ),
+        //   const SizedBox(height: 12),
+        // ],
 
         // ── Auto Play / Pause FAB ──
         FloatingActionButton.extended(
@@ -2139,13 +2251,12 @@ class _FeedFabColumn extends StatelessWidget {
               onShowSubscription();
             }
           },
-          backgroundColor:
-              isAutoScrolling ? Colors.orange.shade700 : cs.primary,
+          backgroundColor: isAutoScrolling
+              ? Colors.orange.shade700
+              : cs.primary,
           foregroundColor: Colors.white,
           icon: Icon(
-            isAutoScrolling
-                ? Icons.pause_rounded
-                : Icons.play_arrow_rounded,
+            isAutoScrolling ? Icons.pause_rounded : Icons.play_arrow_rounded,
             size: 24,
           ),
           label: Text(
@@ -2157,4 +2268,3 @@ class _FeedFabColumn extends StatelessWidget {
     );
   }
 }
-

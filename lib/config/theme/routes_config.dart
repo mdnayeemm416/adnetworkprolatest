@@ -17,6 +17,8 @@ import 'package:adnetwork/layers/presentation/screen/social/social_screens.dart'
 import 'package:adnetwork/layers/presentation/screen/splash/splash_screen.dart';
 import 'package:adnetwork/layers/presentation/screen/stats/stats_screen.dart';
 import 'package:adnetwork/layers/presentation/screen/campaign/campaign_screen.dart';
+import 'package:adnetwork/layers/presentation/screen/adsterra/adsterra_dashboard_screen.dart';
+import 'package:adnetwork/layers/presentation/screen/leaderboard/leaderboard_screen.dart';
 import 'package:flutter/material.dart';
 
 class Routes {
@@ -24,6 +26,8 @@ class Routes {
   static const String login = '/login';
   static const String signup = '/signup';
   static const String home = '/home';
+  static const String adsterraDashboard = '/adsterra-dashboard';
+  static const String leaderboard = '/leaderboard';
   static const String userProfile = '/user-profile';
   static const String followers = '/followers';
   static const String following = '/following';
@@ -97,6 +101,14 @@ class AppRoutes {
         final isMandatory = args?['isMandatory'] as bool? ?? false;
         return MaterialPageRoute(
           builder: (_) => CampaignScreen(isMandatory: isMandatory),
+        );
+      case Routes.adsterraDashboard:
+        return MaterialPageRoute(
+          builder: (_) => const AdsterraDashboardScreen(),
+        );
+      case Routes.leaderboard:
+        return MaterialPageRoute(
+          builder: (_) => const LeaderboardScreen(),
         );
       default:
         return _unDefinedRoute();

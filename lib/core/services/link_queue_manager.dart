@@ -3,8 +3,6 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 import 'package:adnetwork/core/services/mobile_config_manager.dart';
-import 'package:adnetwork/core/services/api_client.dart';
-import 'package:adnetwork/config/api_endpoints.dart';
 import 'package:adnetwork/layers/data/model/link_model.dart';
 import 'package:adnetwork/core/services/pip_service.dart';
 
@@ -76,14 +74,18 @@ class LinkQueueManager {
   static const String _boxName = 'link_queue';
   Box? _box;
 
-  /// Flag to prevent concurrent API fetch calls.
-  bool _isFetchingLinks = false;
+  /// Set of link IDs currently in-flight across Slot 1 and Slot 2.
+  final Set<String> _inProgressLinkIds = <String>{};
 
-  /// Notifier for the currently active full-display WebView session.
+  /// Notifiers for the two concurrent WebView slots.
+  final ValueNotifier<ActiveViewSession?> slot1SessionNotifier = ValueNotifier(null);
+  final ValueNotifier<ActiveViewSession?> slot2SessionNotifier = ValueNotifier(null);
+
+  /// Global active session notifier (active if either slot is viewing).
   final ValueNotifier<ActiveViewSession?> activeSessionNotifier = ValueNotifier(null);
 
   /// Stream that emits a linkId whenever a link has been fully viewed
-  /// in the WebView and should now have its like API called.
+  /// in either WebView slot and should now have its like API called.
   final _completedLinkController = StreamController<String>.broadcast();
   Stream<String> get completedLinkStream => _completedLinkController.stream;
 
@@ -95,8 +97,7 @@ class LinkQueueManager {
   final _autoPlayPauseController = StreamController<void>.broadcast();
   Stream<void> get autoPlayPauseStream => _autoPlayPauseController.stream;
 
-  /// Stream that notifies when all queued links have been consumed during autoplay
-  /// AND the API returned no new links.
+  /// Stream that notifies when all queued links have been consumed during autoplay.
   final _allLinksCompletedController = StreamController<void>.broadcast();
   Stream<void> get allLinksCompletedStream => _allLinksCompletedController.stream;
 
@@ -125,6 +126,9 @@ class LinkQueueManager {
   /// Initialize queue manager on app start. Opens the Hive box.
   Future<void> init() async {
     _box = await Hive.openBox(_boxName);
+    _inProgressLinkIds.clear();
+    slot1SessionNotifier.value = null;
+    slot2SessionNotifier.value = null;
     activeSessionNotifier.value = null;
     debugPrint('[LinkQueue] ✅ Hive box "$_boxName" opened with ${_box!.length} queued items');
   }
@@ -134,6 +138,7 @@ class LinkQueueManager {
   Future<void> populateQueue(List<dynamic> links) async {
     if (_box == null) return;
     await _box!.clear();
+    _inProgressLinkIds.clear();
 
     int addedCount = 0;
     for (final link in links) {
@@ -156,30 +161,23 @@ class LinkQueueManager {
   /// Whether there are any links remaining in the Hive queue.
   bool get hasQueuedLinks => queueLength > 0;
 
-  /// Peek at the next queued link without removing it.
-  QueuedLink? peekNext() {
-    if (_box == null || _box!.isEmpty) return null;
-    final raw = _box!.getAt(0);
-    if (raw is Map) {
-      return QueuedLink.fromMap(raw);
+  /// Get list of links in Hive queue not currently in progress in Slot 1 or Slot 2.
+  List<QueuedLink> get _unassignedLinks {
+    if (_box == null) return [];
+    final list = <QueuedLink>[];
+    for (int i = 0; i < _box!.length; i++) {
+      final raw = _box!.getAt(i);
+      if (raw is Map) {
+        final link = QueuedLink.fromMap(raw);
+        if (!_inProgressLinkIds.contains(link.linkId)) {
+          list.add(link);
+        }
+      }
     }
-    return null;
+    return list;
   }
 
-  /// Remove and return the first queued link from Hive.
-  QueuedLink? dequeueNext() {
-    if (_box == null || _box!.isEmpty) return null;
-    final raw = _box!.getAt(0);
-    _box!.deleteAt(0);
-    if (raw is Map) {
-      final link = QueuedLink.fromMap(raw);
-      debugPrint('[LinkQueue] 📤 Dequeued: ${link.linkId} ($queueLength remaining)');
-      return link;
-    }
-    return null;
-  }
-
-  /// Remove a specific link from the queue by linkId (e.g., after manual like).
+  /// Remove a specific link from the queue by linkId.
   Future<void> removeFromQueue(String linkId) async {
     if (_box == null) return;
     final keys = <dynamic>[];
@@ -192,82 +190,166 @@ class LinkQueueManager {
     for (final key in keys) {
       await _box!.delete(key);
     }
+    _inProgressLinkIds.remove(linkId);
     if (keys.isNotEmpty) {
       debugPrint('[LinkQueue] 🗑️ Removed linkId=$linkId from queue ($queueLength remaining)');
     }
   }
 
-  // ─────────────────── Auto-Fetch API ───────────────────
-
-  /// Fetch fresh links from the API, populate Hive, and continue autoplay.
-  /// Called when the Hive queue is empty during autoplay (especially PIP mode).
-  /// The WebView stays open while fetching — no close/reopen flicker.
-  Future<void> _fetchAndContinueAutoPlay(int pageIndex) async {
-    if (_isFetchingLinks) return;
-    _isFetchingLinks = true;
-
-    debugPrint('[LinkQueue] 🔄 Hive queue empty — fetching fresh links from API...');
-
-    try {
-      final response = await ApiClient.instance.get<LinkModel>(
-        ApiEndpoints.links,
-        fromJsonModel: (json) => LinkModel.fromJson(json as Map<String, dynamic>),
-      );
-
-      if (response.isSuccess) {
-        final links = response.dataList ??
-            (response.data != null ? [response.data!] : <LinkModel>[]);
-
-        // Notify FeedBloc to update its state with fresh links
-        if (links.isNotEmpty) {
-          _feedRefreshController.add(links);
-        }
-
-        // Clear and populate Hive with fresh unliked links
-        await populateQueue(links);
-
-        // Now continue autoplay with the new queue
-        if (hasQueuedLinks) {
-          final next = peekNext();
-          if (next != null) {
-            final duration = randomViewDurationSeconds;
-            final newSession = ActiveViewSession(
-              url: next.url,
-              linkId: next.linkId,
-              durationSeconds: duration,
-              pageIndex: pageIndex + 1,
-              linkIndex: 1,
-              totalLinks: queueLength,
-              isAutoPlay: true,
-            );
-            debugPrint('[LinkQueue] ▶ Continuing autoplay with fresh links: ${next.url} (${duration}s) [$queueLength total]');
-            activeSessionNotifier.value = newSession;
-            _sessionController.add(newSession);
-            _isFetchingLinks = false;
-            return;
-          }
-        }
-
-        // API returned no unliked links — truly done
-        debugPrint('[LinkQueue] ⚠️ API returned no new unliked links. Closing WebView.');
-      } else {
-        debugPrint('[LinkQueue] ❌ API fetch failed: ${response.message}');
-      }
-    } catch (e) {
-      debugPrint('[LinkQueue] ❌ API fetch error: $e');
+  /// Enqueue a single link and trigger concurrent dual slot dispatch.
+  Future<void> enqueueLink({
+    required String url,
+    required String linkId,
+    bool isAutoPlay = false,
+  }) async {
+    if (url.isEmpty || !url.startsWith('http')) {
+      debugPrint('[LinkQueue] ⚠️ Skipping invalid URL enqueue: $url');
+      return;
     }
 
-    _isFetchingLinks = false;
+    if (_box != null) {
+      bool alreadyExists = false;
+      for (int i = 0; i < _box!.length; i++) {
+        final raw = _box!.getAt(i);
+        if (raw is Map && raw['linkId']?.toString() == linkId) {
+          alreadyExists = true;
+          break;
+        }
+      }
 
-    // Failed to get new links — close WebView and signal completion
-    activeSessionNotifier.value = null;
-    _sessionController.add(null);
-    _allLinksCompletedController.add(null);
+      if (!alreadyExists) {
+        await _box!.add({'linkId': linkId, 'url': url});
+        debugPrint('[LinkQueue] 📥 Enqueued link: $linkId ($queueLength in queue)');
+      }
+    }
+
+    _dispatchQueue(isAutoPlay: isAutoPlay);
   }
 
-  // ─────────────────── Session Management ───────────────────
+  /// Dispatches queued URLs to Slot 1 and Slot 2 concurrently.
+  /// If 1 URL is available, 1 slot is used.
+  /// If multiple URLs are available, 2 slots run concurrently to complete 2 at a time!
+  void _dispatchQueue({bool isAutoPlay = true}) {
+    if (isFeedBreakActive) {
+      debugPrint('[LinkQueue] 🛑 Cannot dispatch queue — feed break time is active');
+      return;
+    }
 
-  /// Start viewing a link in the full-display WebView.
+    final unassigned = _unassignedLinks;
+
+    // ── Check Slot 1 ──
+    if (slot1SessionNotifier.value == null && unassigned.isNotEmpty) {
+      final next1 = unassigned.removeAt(0);
+      _inProgressLinkIds.add(next1.linkId);
+      final duration = randomViewDurationSeconds;
+      final session1 = ActiveViewSession(
+        url: next1.url,
+        linkId: next1.linkId,
+        durationSeconds: duration,
+        isAutoPlay: isAutoPlay,
+      );
+      debugPrint('[LinkQueue] ▶ Slot 1 assigned: ${next1.url} (${duration}s) [$queueLength in queue]');
+      slot1SessionNotifier.value = session1;
+    }
+
+    // ── Check Slot 2 ──
+    if (slot2SessionNotifier.value == null && unassigned.isNotEmpty) {
+      final next2 = unassigned.removeAt(0);
+      _inProgressLinkIds.add(next2.linkId);
+      final duration = randomViewDurationSeconds;
+      final session2 = ActiveViewSession(
+        url: next2.url,
+        linkId: next2.linkId,
+        durationSeconds: duration,
+        isAutoPlay: isAutoPlay,
+      );
+      debugPrint('[LinkQueue] ▶ Slot 2 assigned: ${next2.url} (${duration}s) [$queueLength in queue]');
+      slot2SessionNotifier.value = session2;
+    }
+
+    // Sync global activeSessionNotifier
+    activeSessionNotifier.value =
+        slot1SessionNotifier.value ?? slot2SessionNotifier.value;
+    _sessionController.add(activeSessionNotifier.value);
+
+    // If both slots idle and no unassigned items
+    if (slot1SessionNotifier.value == null &&
+        slot2SessionNotifier.value == null &&
+        !hasQueuedLinks) {
+      debugPrint('[LinkQueue] 🏁 All queue items completed in dual slots');
+      _allLinksCompletedController.add(null);
+    }
+  }
+
+  // ─────────────────── Slot Completion & Error Handlers ───────────────────
+
+  /// Called when Slot 1 or Slot 2 finishes viewing its link.
+  Future<void> onSlotFinished(int slotIndex, String linkId) async {
+    debugPrint('[LinkQueue] ✅ Slot $slotIndex finished link: $linkId');
+    _inProgressLinkIds.remove(linkId);
+    await removeFromQueue(linkId);
+
+    if (slotIndex == 1) {
+      slot1SessionNotifier.value = null;
+    } else {
+      slot2SessionNotifier.value = null;
+    }
+
+    if (linkId.isNotEmpty) {
+      _completedLinkController.add(linkId);
+    }
+
+    if (isFeedBreakActive) {
+      cancelViewing();
+      return;
+    }
+
+    // Immediately pick and play next available URL from queue for this slot!
+    _dispatchQueue();
+  }
+
+  /// Called when Slot 1 or Slot 2 encounters an error or timeout.
+  Future<void> onSlotError(int slotIndex, String linkId) async {
+    debugPrint('[LinkQueue] ❌ Slot $slotIndex error on link: $linkId');
+    _inProgressLinkIds.remove(linkId);
+    await removeFromQueue(linkId);
+
+    if (slotIndex == 1) {
+      slot1SessionNotifier.value = null;
+    } else {
+      slot2SessionNotifier.value = null;
+    }
+
+    if (linkId.isNotEmpty) {
+      _completedLinkController.add(linkId);
+    }
+
+    if (isFeedBreakActive) {
+      cancelViewing();
+      return;
+    }
+
+    // Immediately pick next available URL
+    _dispatchQueue();
+  }
+
+  /// Legacy compatibility methods
+  Future<void> onSessionFinished() async {
+    if (slot1SessionNotifier.value != null) {
+      await onSlotFinished(1, slot1SessionNotifier.value!.linkId);
+    } else if (slot2SessionNotifier.value != null) {
+      await onSlotFinished(2, slot2SessionNotifier.value!.linkId);
+    }
+  }
+
+  Future<void> onSessionError() async {
+    if (slot1SessionNotifier.value != null) {
+      await onSlotError(1, slot1SessionNotifier.value!.linkId);
+    } else if (slot2SessionNotifier.value != null) {
+      await onSlotError(2, slot2SessionNotifier.value!.linkId);
+    }
+  }
+
   void startViewing({
     required String url,
     required String linkId,
@@ -277,166 +359,12 @@ class LinkQueueManager {
     bool isAutoPlay = false,
     int? customDurationSeconds,
   }) {
-    if (isFeedBreakActive) {
-      debugPrint('[LinkQueue] 🛑 Cannot start viewing — feed break time is active');
-      return;
-    }
-
-    if (url.isEmpty || !url.startsWith('http')) {
-      debugPrint('[LinkQueue] ⚠️ Skipping invalid URL: $url');
-      if (linkId.isNotEmpty) {
-        removeFromQueue(linkId);
-        _completedLinkController.add(linkId);
-      }
-      if (isAutoPlay && !isFeedBreakActive) {
-        if (hasQueuedLinks) {
-          final next = peekNext();
-          if (next != null) {
-            startViewing(
-              url: next.url,
-              linkId: next.linkId,
-              pageIndex: pageIndex,
-              linkIndex: linkIndex,
-              totalLinks: totalLinks,
-              isAutoPlay: true,
-            );
-            return;
-          }
-        }
-        _fetchAndContinueAutoPlay(pageIndex);
-      }
-      return;
-    }
-
-    final duration = customDurationSeconds ?? randomViewDurationSeconds;
-    final session = ActiveViewSession(
-      url: url,
-      linkId: linkId,
-      durationSeconds: duration,
-      pageIndex: pageIndex,
-      linkIndex: linkIndex,
-      totalLinks: totalLinks,
-      isAutoPlay: isAutoPlay,
-    );
-
-    activeSessionNotifier.value = session;
-    _sessionController.add(session);
-    debugPrint('[LinkQueue] ▶ Started full viewing: $url (${duration}s) [Link $linkIndex/$totalLinks]');
+    enqueueLink(url: url, linkId: linkId, isAutoPlay: isAutoPlay);
   }
 
-  /// Legacy enqueue compatibility — opens the link in full display.
   void enqueue(String url, {String? linkId}) {
     if (url.isNotEmpty && linkId != null) {
-      startViewing(url: url, linkId: linkId);
-    }
-  }
-
-  /// Called when the active session completes viewing successfully.
-  /// Removes the link from Hive, calls the completed stream (triggers like API),
-  /// and in autoplay mode, directly swaps to the next queued link (no close/reopen).
-  /// If the queue is empty, fetches fresh links from the API and continues.
-  Future<void> onSessionFinished() async {
-    final session = activeSessionNotifier.value;
-    if (session == null) return;
-
-    debugPrint('[LinkQueue] ✅ Session finished: ${session.url} (${session.linkId})');
-    final linkId = session.linkId;
-    final wasAutoPlay = session.isAutoPlay;
-    final pageIndex = session.pageIndex;
-
-    // Remove from Hive queue before picking next link
-    await removeFromQueue(linkId);
-
-    // Trigger the like API
-    if (linkId.isNotEmpty) {
-      _completedLinkController.add(linkId);
-    }
-
-    // In autoplay mode, directly swap to next queued link (WebView stays open) if not in break time
-    if (wasAutoPlay && !isFeedBreakActive) {
-      if (hasQueuedLinks) {
-        final next = peekNext();
-        if (next != null) {
-          final duration = randomViewDurationSeconds;
-          final newSession = ActiveViewSession(
-            url: next.url,
-            linkId: next.linkId,
-            durationSeconds: duration,
-            pageIndex: pageIndex,
-            linkIndex: 1,
-            totalLinks: queueLength,
-            isAutoPlay: true,
-          );
-          debugPrint('[LinkQueue] ▶ Swapping to next: ${next.url} (${duration}s) [$queueLength remaining]');
-          activeSessionNotifier.value = newSession;
-          _sessionController.add(newSession);
-          return;
-        }
-      }
-
-      // Queue empty during autoplay — fetch fresh links from API and continue if not in break time
-      _fetchAndContinueAutoPlay(pageIndex);
-      return;
-    }
-
-    // Not autoplay or break time active — close WebView
-    activeSessionNotifier.value = null;
-    _sessionController.add(null);
-    if (isFeedBreakActive && wasAutoPlay) {
-      requestPauseAutoPlay();
-    }
-  }
-
-  /// Called when the session encountered an error or timed out.
-  /// Same direct-swap behavior as onSessionFinished for seamless autoplay.
-  Future<void> onSessionError() async {
-    final session = activeSessionNotifier.value;
-    if (session == null) return;
-
-    debugPrint('[LinkQueue] ❌ Session error/timeout: ${session.url}');
-    final linkId = session.linkId;
-    final wasAutoPlay = session.isAutoPlay;
-    final pageIndex = session.pageIndex;
-
-    // Remove from Hive queue and complete the link so user doesn't get stuck
-    await removeFromQueue(linkId);
-
-    if (linkId.isNotEmpty) {
-      _completedLinkController.add(linkId);
-    }
-
-    // In autoplay mode, directly swap to next queued link (WebView stays open) if not in break time
-    if (wasAutoPlay && !isFeedBreakActive) {
-      if (hasQueuedLinks) {
-        final next = peekNext();
-        if (next != null) {
-          final duration = randomViewDurationSeconds;
-          final newSession = ActiveViewSession(
-            url: next.url,
-            linkId: next.linkId,
-            durationSeconds: duration,
-            pageIndex: pageIndex,
-            linkIndex: 1,
-            totalLinks: queueLength,
-            isAutoPlay: true,
-          );
-          debugPrint('[LinkQueue] ▶ Swapping to next (after error): ${next.url} (${duration}s)');
-          activeSessionNotifier.value = newSession;
-          _sessionController.add(newSession);
-          return;
-        }
-      }
-
-      // Queue empty during autoplay — fetch fresh links from API and continue if not in break time
-      _fetchAndContinueAutoPlay(pageIndex);
-      return;
-    }
-
-    // Not autoplay or break time active — close WebView
-    activeSessionNotifier.value = null;
-    _sessionController.add(null);
-    if (isFeedBreakActive && wasAutoPlay) {
-      requestPauseAutoPlay();
+      enqueueLink(url: url, linkId: linkId);
     }
   }
 
@@ -444,29 +372,16 @@ class LinkQueueManager {
     _autoPlayPauseController.add(null);
   }
 
-  /// Dismisses/cancels the current viewing session without calling like API (e.g. user closed manually).
-  /// The link is NOT removed from Hive so it can be resumed later.
+  /// Dismisses/cancels all active slot viewing sessions.
   void cancelViewing({bool completeLike = false}) {
-    final session = activeSessionNotifier.value;
-    if (session == null) return;
-
-    debugPrint('[LinkQueue] 🚫 Session cancelled: ${session.url}');
-    final linkId = session.linkId;
-    final wasAutoPlay = session.isAutoPlay;
-
+    debugPrint('[LinkQueue] 🚫 Cancelling active slot viewing sessions');
+    _inProgressLinkIds.clear();
+    slot1SessionNotifier.value = null;
+    slot2SessionNotifier.value = null;
     activeSessionNotifier.value = null;
     _sessionController.add(null);
 
-    if (wasAutoPlay) {
-      requestPauseAutoPlay();
-    }
-
-    if (completeLike && linkId.isNotEmpty) {
-      removeFromQueue(linkId);
-      _completedLinkController.add(linkId);
-    }
-    // Note: When cancelled without completeLike, the link stays in Hive
-    // so autoplay can resume from it later.
+    requestPauseAutoPlay();
   }
 
   void dispose() {
@@ -475,6 +390,8 @@ class LinkQueueManager {
     _autoPlayPauseController.close();
     _allLinksCompletedController.close();
     _feedRefreshController.close();
+    slot1SessionNotifier.dispose();
+    slot2SessionNotifier.dispose();
     activeSessionNotifier.dispose();
     _box?.close();
   }

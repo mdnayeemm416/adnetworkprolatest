@@ -103,4 +103,42 @@ class LinkRepository {
           CommentModel.fromJson(json as Map<String, dynamic>),
     );
   }
+
+  /// POST /api/links/bulk
+  /// Body: {"text": "ZoneName,PlacementName,PlacementId,URL\n..."}
+  Future<ApiResponse<dynamic>> importBulkLinks(String csvText) async {
+    return _api.post(
+      ApiEndpoints.bulkLinks,
+      body: {'text': csvText},
+    );
+  }
+
+  /// Delete all existing links of the current user.
+  /// Fetches my links and deletes each one. Returns the number of links deleted.
+  Future<int> deleteAllMyLinks() async {
+    try {
+      final res = await getMyLinks();
+      final List<LinkModel> links = [];
+      if (res.dataList != null && res.dataList!.isNotEmpty) {
+        links.addAll(res.dataList!);
+      } else if (res.data != null) {
+        links.add(res.data!);
+      }
+
+      int deletedCount = 0;
+      for (final link in links) {
+        if (link.id != null && link.id!.isNotEmpty) {
+          try {
+            final delRes = await deleteLink(link.id!);
+            if (delRes.isSuccess) {
+              deletedCount++;
+            }
+          } catch (_) {}
+        }
+      }
+      return deletedCount;
+    } catch (_) {
+      return 0;
+    }
+  }
 }

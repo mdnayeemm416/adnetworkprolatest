@@ -20,13 +20,13 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
   Timer? _nextCooldownTimer;
   Timer? _feedBreakCooldownTimer;
   StreamSubscription<String>? _queueCompletionSub;
-  StreamSubscription<void>? _allLinksCompletedSub;
-  StreamSubscription<List<LinkModel>>? _feedRefreshSub;
   int _pendingPage = 1;
   bool _isRefresh = false;
+  int _likeBlockedUntil = 0;
 
   FeedBloc({required this.linkRepository}) : super(const FeedState()) {
     on<LoadFeed>(_onLoadFeed);
+    on<MarkLinkLiked>(_onMarkLinkLiked);
     on<ToggleLike>(_onToggleLike);
     on<RefreshFeed>(_onRefreshFeed);
     on<LoadMoreFeed>(_onLoadMore);
@@ -42,24 +42,9 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     add(const CheckFeedCooldowns());
 
     // Listen for completed link viewings from the WebView queue
-    // and fire the like API at that point.
     _queueCompletionSub = LinkQueueManager.instance.completedLinkStream.listen(
       _onLinkViewed,
     );
-
-    // Listen for when all queued links have been consumed during autoplay
-    // to automatically advance to the next page.
-    _allLinksCompletedSub = LinkQueueManager.instance.allLinksCompletedStream.listen((_) {
-      debugPrint('[FeedBloc] 🎉 All queued links done — auto-advancing to next page');
-      add(ChangeFeedPage(state.currentPage + 1));
-    });
-
-    // Listen for fresh links fetched by LinkQueueManager during autoplay/PIP
-    // and update BLoC state to keep UI in sync.
-    _feedRefreshSub = LinkQueueManager.instance.feedRefreshStream.listen((links) {
-      debugPrint('[FeedBloc] 🔄 Received ${links.length} fresh links from autoplay fetch');
-      add(_UpdateLinksFromQueue(links));
-    });
   }
 
   /// Synchronize cooldowns against persistent storage and current wall-clock time.
@@ -90,9 +75,12 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     if (breakBlockedUntil > now) {
       final remaining = ((breakBlockedUntil - now) / 1000).ceil();
       LinkQueueManager.instance.isFeedBreakActive = true;
+      _likeBlockedUntil = 0;
+      _likeCooldownTimer?.cancel();
       emit(state.copyWith(
         feedBreakCooldownSeconds: remaining,
         feedBreakLikesCount: savedLikes,
+        likeCooldownSeconds: 0,
       ));
       _startFeedBreakCooldown();
     } else {
@@ -112,6 +100,19 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
         ));
       }
     }
+
+    // 3. Like button cooldown
+    if (_likeBlockedUntil > now) {
+      final remaining = ((_likeBlockedUntil - now) / 1000).ceil();
+      emit(state.copyWith(likeCooldownSeconds: remaining));
+      _startLikeCooldown();
+    } else {
+      _likeCooldownTimer?.cancel();
+      _likeBlockedUntil = 0;
+      if (state.likeCooldownSeconds != 0) {
+        emit(state.copyWith(likeCooldownSeconds: 0));
+      }
+    }
   }
 
   Future<void> _onCheckFeedCooldowns(
@@ -122,19 +123,10 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
   }
 
   /// Called when a link has been fully viewed in the WebView.
-  /// Now mark it liked in the state and call the like API.
+  /// Dispatches ToggleLike to update UI, like count, streak, cooldowns, and execute like API.
   void _onLinkViewed(String linkId) {
+    debugPrint('[FeedBloc] 🌐 Link viewing completed in WebView — calling Like API: $linkId');
     add(ToggleLike(linkId));
-    linkRepository
-        .toggleLike(linkId)
-        .then(
-          (_) {
-            debugPrint('[FeedBloc] 👍 Like API called after viewing: $linkId');
-          },
-          onError: (e) {
-            debugPrint('[FeedBloc] ❌ Like API failed for $linkId: $e');
-          },
-        );
   }
 
   // ── Load Feed ──
@@ -152,9 +144,6 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
         final links =
             response.dataList ??
             (response.data != null ? [response.data!] : <LinkModel>[]);
-
-        // Populate Hive queue with unliked links from API
-        await LinkQueueManager.instance.populateQueue(links);
 
         emit(
           state.copyWith(
@@ -184,21 +173,24 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     }
   }
 
-  // ── Toggle Like (with cooldown and feed break limit) ──
+  // ── Mark Link Liked (Optimistic UI update, cooldown calculation & timer start) ──
 
-  Future<void> _onToggleLike(ToggleLike event, Emitter<FeedState> emit) async {
+  Future<void> _onMarkLinkLiked(
+    MarkLinkLiked event,
+    Emitter<FeedState> emit,
+  ) async {
     final links = List<LinkModel>.from(state.links);
     final idx = links.indexWhere((l) => l.id == event.linkId);
     if (idx == -1) return;
 
     final link = links[idx];
-    if (link.isLiked) return; // Prevent double-liking
+    if (link.isLiked) return;
 
     links[idx] = link.copyWith(isLiked: true, likesCount: link.likesCount + 1);
 
-    // Calculate cooldown: every 4th like → 4s, otherwise → 1s
+    // Calculate cooldown: 2s hold normally, every 4th like → 4s hold
     final newStreak = state.likeStreak + 1;
-    final int cooldown = (newStreak % 4 == 0) ? 4 : 1;
+    final int cooldown = (newStreak % 4 == 0) ? 4 : 2;
 
     // Check feed break limits from mobile config
     final config = MobileConfigManager.instance.config;
@@ -225,11 +217,14 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
       LinkQueueManager.instance.requestPauseAutoPlay();
       LinkQueueManager.instance.cancelViewing(completeLike: false);
 
+      _likeBlockedUntil = 0;
+      _likeCooldownTimer?.cancel();
+
       emit(
         state.copyWith(
           links: links,
           likeStreak: newStreak,
-          likeCooldownSeconds: cooldown,
+          likeCooldownSeconds: 0,
           feedBreakLikesCount: newBreakLikes,
           feedBreakCooldownSeconds: breakSecs,
         ),
@@ -238,6 +233,9 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
       _startFeedBreakCooldown();
     } else {
       await prefs.setInt('feed_break_likes_count', newBreakLikes);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      _likeBlockedUntil = now + (cooldown * 1000);
+
       emit(
         state.copyWith(
           links: links,
@@ -247,8 +245,29 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
         ),
       );
 
-      // Start the cooldown countdown timer
+      // Start the cooldown countdown timer immediately
       _startLikeCooldown();
+    }
+  }
+
+  // ── Toggle Like (Called when WebView display completes: calls API) ──
+
+  Future<void> _onToggleLike(ToggleLike event, Emitter<FeedState> emit) async {
+    // Call repository like API asynchronously upon webview completion
+    linkRepository.toggleLike(event.linkId).then(
+      (_) => debugPrint('[FeedBloc] 👍 Like API executed after webview completion: ${event.linkId}'),
+      onError: (e) => debugPrint('[FeedBloc] ❌ Like API error for ${event.linkId}: $e'),
+    );
+
+    // Ensure state reflects liked in case it wasn't already marked
+    final links = List<LinkModel>.from(state.links);
+    final idx = links.indexWhere((l) => l.id == event.linkId);
+    if (idx != -1) {
+      final link = links[idx];
+      if (!link.isLiked) {
+        links[idx] = link.copyWith(isLiked: true, likesCount: link.likesCount + 1);
+        emit(state.copyWith(links: links));
+      }
     }
   }
 
@@ -263,11 +282,13 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
   }
 
   void _onTickLikeCooldown(_TickLikeCooldown event, Emitter<FeedState> emit) {
-    final remaining = state.likeCooldownSeconds - 1;
-    if (remaining <= 0) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_likeBlockedUntil <= 0 || _likeBlockedUntil <= now) {
+      _likeBlockedUntil = 0;
       _likeCooldownTimer?.cancel();
       emit(state.copyWith(likeCooldownSeconds: 0));
     } else {
+      final remaining = ((_likeBlockedUntil - now) / 1000).ceil();
       emit(state.copyWith(likeCooldownSeconds: remaining));
     }
   }
@@ -278,10 +299,12 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     RefreshFeed event,
     Emitter<FeedState> emit,
   ) async {
+    _likeBlockedUntil = 0;
+    _likeCooldownTimer?.cancel();
     await _syncCooldowns(emit);
     _isRefresh = true;
     _pendingPage = state.currentPage;
-    emit(state.copyWith(pageWaitSeconds: 4));
+    emit(state.copyWith(pageWaitSeconds: 4, likeCooldownSeconds: 0));
     _startPageWait();
   }
 
@@ -314,9 +337,11 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
       return;
     }
 
+    _likeBlockedUntil = 0;
+    _likeCooldownTimer?.cancel();
     _isRefresh = false;
     _pendingPage = event.page;
-    emit(state.copyWith(pageWaitSeconds: 4, nextButtonClicks: newClicks));
+    emit(state.copyWith(pageWaitSeconds: 4, nextButtonClicks: newClicks, likeCooldownSeconds: 0));
     _startPageWait();
   }
 
@@ -372,11 +397,14 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
       // Break ended — reset like value in cache and state
       await prefs.setInt('feed_break_blocked_until', 0);
       await prefs.setInt('feed_break_likes_count', 0);
+      _likeBlockedUntil = 0;
+      _likeCooldownTimer?.cancel();
 
       emit(
         state.copyWith(
           feedBreakCooldownSeconds: 0,
           feedBreakLikesCount: 0,
+          likeCooldownSeconds: 0,
         ),
       );
     } else {
@@ -426,9 +454,6 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
         final links =
             response.dataList ??
             (response.data != null ? [response.data!] : <LinkModel>[]);
-
-        // Populate Hive queue with unliked links from new page
-        await LinkQueueManager.instance.populateQueue(links);
 
         emit(
           state.copyWith(
@@ -504,8 +529,6 @@ class FeedBloc extends Bloc<FeedEvent, FeedState> {
     _nextCooldownTimer?.cancel();
     _feedBreakCooldownTimer?.cancel();
     _queueCompletionSub?.cancel();
-    _allLinksCompletedSub?.cancel();
-    _feedRefreshSub?.cancel();
     return super.close();
   }
 }
